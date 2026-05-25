@@ -731,6 +731,21 @@ def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsys
     else:
         lines.append("- No mandatory manual-review item was detected by deterministic rules.")
 
+    memory_items = [item for item in risks if item["kind"] == "memory-lifetime"]
+    lines.extend(["", "## Memory Leak Focus", ""])
+    if memory_items:
+        for item in memory_items[:20]:
+            lines.append("- `{}`: {}".format(item["subject"], "; ".join(item["reasons"])))
+        lines.extend(
+            [
+                "- Validate allocation success and failure paths.",
+                "- Check early return and goto-error cleanup paths.",
+                "- Check ownership transfer, refcount balance, and repeated legacy call paths.",
+            ]
+        )
+    else:
+        lines.append("- No memory-lifetime diff symbol was detected by deterministic rules.")
+
     lines.extend(
         [
             "",

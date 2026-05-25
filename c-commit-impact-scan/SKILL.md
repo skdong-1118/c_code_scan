@@ -1,6 +1,6 @@
 ---
 name: c-commit-impact-scan
-description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic rules.
+description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic rules. The final deliverable must be a Markdown detection report.
 ---
 
 # C Commit Impact Scan
@@ -51,7 +51,7 @@ The target environment is a large commercial C codebase, usually intranet-only, 
    - `.impact-scan/subsystem_impact.json`
    - `.impact-scan/risk_items.json`
    - `.impact-scan/manual_review.json`
-9. Produce a concise report with:
+9. Produce a final Markdown detection report. Use `.impact-scan/risk_report.md` as the base report, refine it if needed, and ensure the final answer points to the generated `.md` file. The Markdown report must include:
    - overall risk: high, medium, or low
    - whether CodeGraph was used successfully
    - high-risk changed files and symbols
@@ -61,6 +61,8 @@ The target environment is a large commercial C codebase, usually intranet-only, 
    - mandatory manual-review items
    - suggested regression tests
    - scan limitations and confidence
+
+The final deliverable is not just a chat summary. It must be a Markdown report file, normally `.impact-scan/risk_report.md`.
 
 ## Subsystem Configuration
 
@@ -138,7 +140,7 @@ Claude Code should keep the interaction simple:
 
 1. Run the scanner.
 2. Read the generated Markdown and JSON artifacts.
-3. Summarize findings.
+3. Ensure `.impact-scan/risk_report.md` exists and is the final Markdown detection report.
 4. Avoid opening broad repository files unless a specific risk item needs evidence.
 
 If CodeGraph is missing, tell the user clearly and either:
@@ -210,6 +212,18 @@ When the report flags `memory-lifetime`, do not treat it as a normal function ch
 If no dynamic analysis is available in the intranet environment, recommend targeted stress loops and process memory monitoring for affected legacy features.
 
 ## Report Style
+
+The output report must be Markdown. Keep these sections unless there is a strong reason to add more:
+
+- `Summary`
+- `High And Medium Risk Items`
+- `Affected Subsystem Candidates`
+- `Reference Evidence`
+- `Impact Paths`
+- `Must Review Manually`
+- `Memory Leak Focus`
+- `Suggested Regression Checks`
+- `Limitations`
 
 Use evidence-backed language. Prefer:
 
