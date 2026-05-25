@@ -44,13 +44,13 @@ For a large repository, index during a scheduled window or CI preparation step. 
 Claude Code can run the scan in preferred mode:
 
 ```powershell
-python C:\skills\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --codegraph-mode prefer
+python C:\skills\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
 ```
 
 Use required mode when you want the scan to fail instead of silently falling back:
 
 ```powershell
-python C:\skills\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --codegraph-mode required
+python C:\skills\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode required
 ```
 
 ## Path and Shell Rules
@@ -73,7 +73,7 @@ The scanner is designed to produce an actionable triage report, not a proof of b
 
 ## Optional Repository Config
 
-Place `.impact-scan.yml` or `.impact-scan.json` in the C repository root to define:
+Place `.impact-scan.yml` or `.impact-scan.json` in each C subsystem directory to define:
 
 - public interface paths
 - legacy feature paths
@@ -81,4 +81,4 @@ Place `.impact-scan.yml` or `.impact-scan.json` in the C repository root to defi
 - memory-sensitive paths
 - low-risk paths
 
-This makes Claude Code less dependent on inference and improves old-feature impact detection.
+This keeps each scan bounded to one subsystem and makes Claude Code less dependent on whole-repository inference.

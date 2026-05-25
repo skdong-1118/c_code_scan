@@ -15,32 +15,33 @@ The target environment is a large commercial C codebase, usually intranet-only, 
 
 1. Confirm the current directory is the target git repository.
 2. Confirm `codegraph` or `codegraph.exe` is installed. CodeGraph is the primary backend for this skill.
-3. Run the bundled scanner from the repository root:
+3. Choose the subsystem directory to scan, such as `subsys/net` or `product/http`.
+4. Run the bundled scanner from the repository root with `--subsystem`:
 
    ```powershell
-   python path\to\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --codegraph-mode prefer
+   python path\to\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
    ```
 
    On macOS or Linux:
 
    ```bash
-   python3 path/to/c-commit-impact-scan/scripts/c_impact_scan.py --range HEAD~1..HEAD --codegraph-mode prefer
+   python3 path/to/c-commit-impact-scan/scripts/c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode prefer
    ```
 
-4. For first-time setup, if the user has approved indexing or the repository policy allows it, add `--init-codegraph`:
+5. For first-time setup, if the user has approved indexing or the repository policy allows it, add `--init-codegraph`:
 
    ```powershell
-   python path\to\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --codegraph-mode prefer --init-codegraph
+   python path\to\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer --init-codegraph
    ```
 
-5. If the scan must fail when CodeGraph is unavailable, use:
+6. If the scan must fail when CodeGraph is unavailable, use:
 
    ```powershell
-   python path\to\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --codegraph-mode required
+   python path\to\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode required
    ```
 
-6. Read `.impact-scan/risk_report.md` first.
-7. If more evidence is needed, inspect these generated files:
+7. Read `.impact-scan/risk_report.md` first.
+8. If more evidence is needed, inspect these generated files:
    - `.impact-scan/scan_config.json`
    - `.impact-scan/codegraph_status.json`
    - `.impact-scan/diff_summary.json`
@@ -50,7 +51,7 @@ The target environment is a large commercial C codebase, usually intranet-only, 
    - `.impact-scan/subsystem_impact.json`
    - `.impact-scan/risk_items.json`
    - `.impact-scan/manual_review.json`
-8. Produce a concise report with:
+9. Produce a concise report with:
    - overall risk: high, medium, or low
    - whether CodeGraph was used successfully
    - high-risk changed files and symbols
@@ -61,9 +62,17 @@ The target environment is a large commercial C codebase, usually intranet-only, 
    - suggested regression tests
    - scan limitations and confidence
 
-## Project Configuration
+## Subsystem Configuration
 
-For better legacy-impact results, add `.impact-scan.yml` at the target repository root. The parser is intentionally simple for Python 3.6 and offline Windows environments; use top-level list keys:
+For better legacy-impact results, add `.impact-scan.yml` inside the subsystem directory, not the repository root. The parser is intentionally simple for Python 3.6 and offline Windows environments; use top-level list keys:
+
+```text
+repo/
+  subsys/net/
+    .impact-scan.yml
+    include/
+    legacy/
+```
 
 ```yaml
 public_interfaces:
@@ -86,7 +95,9 @@ low_risk_paths:
   - docs/
 ```
 
-The scanner also accepts `.impact-scan.json` for stricter internal configuration. Prefer configuration over asking Claude Code to infer old-feature boundaries from directory names.
+Paths in the subsystem config are relative to the subsystem directory. With `--subsystem subsys/net`, `include/` becomes `subsys/net/include/` internally.
+
+The scanner also accepts `.impact-scan.json` inside the subsystem directory for stricter internal configuration. Prefer subsystem configuration over asking Claude Code to infer old-feature boundaries from the whole repository.
 
 ## Tool Priority
 

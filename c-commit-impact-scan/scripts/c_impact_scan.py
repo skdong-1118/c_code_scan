@@ -42,13 +42,28 @@ MEMORY_RE = re.compile(
 SEMANTIC_RE = re.compile(r"\b(return|NULL|nullptr|errno|error|goto|timeout|retry|len|length|size|owner|lock|unlock)\b", re.I)
 
 
-def default_scan_config():
+def scoped_prefix(scope_path, value):
+    raw_value = normalize(str(value)).strip()
+    value = raw_value
+    scope_path = normalize(scope_path or "").strip().strip("/")
+    if not scope_path or not value:
+        return value
+    trailing = "/" if raw_value.endswith("/") else ""
+    value = value.strip("/")
+    if value == scope_path or value.startswith(scope_path + "/"):
+        return value + trailing
+    return scope_path + "/" + value + trailing
+
+
+def default_scan_config(scope_path=None):
+    scope_path = normalize(scope_path or "").strip().strip("/")
     return {
-        "public_interfaces": ["include/", "inc/", "common/", "public/", "api/", "sdk/include/"],
-        "legacy_paths": ["legacy/", "old/", "stable/"],
-        "high_risk_paths": ["platform/", "protocol/", "storage/", "upgrade/", "adapter/", "common/"],
-        "memory_sensitive_paths": ["memory/", "mem/", "buffer/", "session/", "core/"],
-        "low_risk_paths": ["test/", "tests/", "doc/", "docs/"],
+        "scope_path": scope_path,
+        "public_interfaces": [scoped_prefix(scope_path, p) for p in ["include/", "inc/", "common/", "public/", "api/", "sdk/include/"]],
+        "legacy_paths": [scoped_prefix(scope_path, p) for p in ["legacy/", "old/", "stable/"]],
+        "high_risk_paths": [scoped_prefix(scope_path, p) for p in ["platform/", "protocol/", "storage/", "upgrade/", "adapter/", "common/"]],
+        "memory_sensitive_paths": [scoped_prefix(scope_path, p) for p in ["memory/", "mem/", "buffer/", "session/", "core/"]],
+        "low_risk_paths": [scoped_prefix(scope_path, p) for p in ["test/", "tests/", "doc/", "docs/"]],
         "subsystems": {},
     }
 
@@ -70,10 +85,12 @@ def parse_simple_yaml_lists(text):
     return data
 
 
-def load_scan_config(repo):
-    config = default_scan_config()
-    json_path = repo / ".impact-scan.json"
-    yaml_paths = [repo / ".impact-scan.yml", repo / ".impact-scan.yaml"]
+def load_scan_config(repo, scope_path=None):
+    scope_path = normalize(scope_path or "").strip().strip("/")
+    config = default_scan_config(scope_path)
+    config_root = repo / scope_path if scope_path else repo
+    json_path = config_root / ".impact-scan.json"
+    yaml_paths = [config_root / ".impact-scan.yml", config_root / ".impact-scan.yaml"]
     loaded = {}
     if json_path.exists():
         loaded = json.loads(json_path.read_text(encoding="utf-8"))
@@ -92,7 +109,7 @@ def load_scan_config(repo):
         values = loaded.get(key)
         if isinstance(values, list):
             for value in values:
-                normalized = normalize(str(value))
+                normalized = scoped_prefix(scope_path, str(value))
                 if normalized and normalized not in config[key]:
                     config[key].append(normalized)
     if isinstance(loaded.get("subsystems"), dict):
@@ -109,6 +126,19 @@ def path_matches_prefix(path, prefixes):
         if normalized.startswith(normalized_prefix.rstrip("/") + "/") or normalized == normalized_prefix.rstrip("/"):
             return True
     return False
+
+
+def path_in_scope(path, config):
+    scope_path = normalize(config.get("scope_path", "")).strip().strip("/")
+    if not scope_path:
+        return True
+    normalized = normalize(path).lower()
+    scope = scope_path.lower()
+    return normalized == scope or normalized.startswith(scope + "/")
+
+
+def filter_files_by_scope(files, config):
+    return [item for item in files if path_in_scope(item["path"], config)]
 
 
 def configured_subsystem_for(path, config):
@@ -237,8 +267,13 @@ def subsystem_for(path, depth=2):
     return "/".join(parts[:depth])
 
 
+def pathspec_args_for_scope(config):
+    scope_path = normalize(config.get("scope_path", "")).strip().strip("/") if config else ""
+    return ["--", scope_path] if scope_path else []
+
+
 def parse_changed_files(repo, commit_range, config=None):
-    output = git(["diff", "--numstat", "--name-status", commit_range], repo)
+    output = git(["diff", "--numstat", "--name-status", commit_range] + pathspec_args_for_scope(config), repo)
     files = {}
     for line in output.splitlines():
         if not line.strip():
@@ -258,11 +293,14 @@ def parse_changed_files(repo, commit_range, config=None):
     if config:
         for item in files.values():
             apply_config_to_file(item, config)
+        return sorted(filter_files_by_scope(files.values(), config), key=lambda x: x["path"])
     return sorted(files.values(), key=lambda x: x["path"])
 
 
-def diff_lines(repo, commit_range):
-    output = git(["diff", "--unified=0", commit_range, "--", "*.c", "*.h"], repo)
+def diff_lines(repo, commit_range, config=None):
+    scope_path = normalize(config.get("scope_path", "")).strip().strip("/") if config else ""
+    pathspec = ["--", scope_path] if scope_path else ["--", "*.c", "*.h"]
+    output = git(["diff", "--unified=0", commit_range] + pathspec, repo)
     current_file = ""
     for line in output.splitlines():
         if line.startswith("+++ b/"):
@@ -274,10 +312,12 @@ def diff_lines(repo, commit_range):
             yield current_file, line[1:]
 
 
-def extract_symbols(repo, commit_range, max_symbols):
+def extract_symbols(repo, commit_range, max_symbols, config=None):
     symbols = {}
-    for file_path, line in diff_lines(repo, commit_range):
+    for file_path, line in diff_lines(repo, commit_range, config):
         if not file_path:
+            continue
+        if config and (not C_FILE_RE.search(file_path) or not path_in_scope(file_path, config)):
             continue
         stripped = line.strip()
         if not stripped:
@@ -718,6 +758,7 @@ def main():
     parser = argparse.ArgumentParser(description="Scan C commit impact for legacy feature risk.")
     parser.add_argument("--range", default="HEAD~1..HEAD", help="git commit range to scan")
     parser.add_argument("--out", default=".impact-scan", help="output directory")
+    parser.add_argument("--subsystem", default="", help="repo-relative subsystem directory to scan, such as subsys/net")
     parser.add_argument("--max-symbols", type=int, default=200, help="maximum changed symbols to analyze")
     parser.add_argument("--max-refs", type=int, default=50, help="maximum reference files per symbol")
     parser.add_argument(
@@ -742,7 +783,7 @@ def main():
 
     out = repo / args.out
     out.mkdir(parents=True, exist_ok=True)
-    config = load_scan_config(repo)
+    config = load_scan_config(repo, args.subsystem)
 
     codegraph = prepare_codegraph(repo, args.codegraph_mode, args.init_codegraph)
     if args.codegraph_mode == "required" and not codegraph["available"]:
@@ -751,7 +792,7 @@ def main():
         return 3
 
     files = parse_changed_files(repo, args.range, config)
-    symbols = extract_symbols(repo, args.range, args.max_symbols)
+    symbols = extract_symbols(repo, args.range, args.max_symbols, config)
     refs = gather_references(repo, symbols, args.max_refs, codegraph, config)
     risks = build_risk_items(files, symbols, refs, config)
     subsystems = subsystem_impact(files, refs, config)

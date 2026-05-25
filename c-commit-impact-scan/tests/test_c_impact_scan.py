@@ -11,10 +11,12 @@ SPEC.loader.exec_module(scan)
 
 
 class CImpactScanTests(unittest.TestCase):
-    def test_loads_architecture_config_from_yaml(self):
+    def test_loads_architecture_config_from_subsystem_yaml(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            (repo / ".impact-scan.yml").write_text(
+            subsystem = repo / "subsys" / "net"
+            subsystem.mkdir(parents=True)
+            (subsystem / ".impact-scan.yml").write_text(
                 "\n".join(
                     [
                         "public_interfaces:",
@@ -30,12 +32,24 @@ class CImpactScanTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            config = scan.load_scan_config(repo)
+            config = scan.load_scan_config(repo, "subsys/net")
 
-        self.assertIn("include/", config["public_interfaces"])
-        self.assertIn("legacy/", config["legacy_paths"])
-        self.assertIn("platform/", config["high_risk_paths"])
-        self.assertIn("core/session/", config["memory_sensitive_paths"])
+        self.assertEqual("subsys/net", config["scope_path"])
+        self.assertIn("subsys/net/include/", config["public_interfaces"])
+        self.assertIn("subsys/net/legacy/", config["legacy_paths"])
+        self.assertIn("subsys/net/platform/", config["high_risk_paths"])
+        self.assertIn("subsys/net/core/session/", config["memory_sensitive_paths"])
+
+    def test_subsystem_scope_filters_changed_files(self):
+        config = scan.default_scan_config("subsys/net")
+        files = [
+            scan.changed_file("subsys/net/include/api.h", "M"),
+            scan.changed_file("subsys/storage/include/api.h", "M"),
+        ]
+
+        scoped = scan.filter_files_by_scope(files, config)
+
+        self.assertEqual(["subsys/net/include/api.h"], [item["path"] for item in scoped])
 
     def test_config_marks_public_legacy_and_high_risk_files(self):
         config = scan.default_scan_config()
