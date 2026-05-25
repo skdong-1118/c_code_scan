@@ -1,0 +1,3 @@
+display_name: C Commit Impact Scan
+short_description: Scan C commits for legacy impact.
+default_prompt: In Claude Code, scan the latest C commit with CodeGraph first, then generate a legacy feature impact risk report.

@@ -1,0 +1,5 @@
+.impact-scan/
+.codegraph/
+.pycache/
+__pycache__/
+*.py[cod]
