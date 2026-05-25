@@ -107,6 +107,44 @@ class CImpactScanTests(unittest.TestCase):
         self.assertTrue(paths[0]["is_legacy"])
         self.assertEqual(paths[0]["subsystem"], "legacy/http")
 
+    def test_detects_architecture_risk_categories_from_c_evidence(self):
+        cases = {
+            "memory_safety": "memcpy(dst, src, len + 1);",
+            "memory_leak": "ctx = malloc(sizeof(*ctx)); return -1;",
+            "abi_layout": "struct api_msg { int version; long size; };",
+            "concurrency": "pthread_mutex_unlock(&ctx->lock);",
+            "error_handling": "if (!ctx) return ERR_INVALID;",
+            "ownership_lifetime": "refcount_dec(&obj->refcnt); release(obj);",
+            "macro_config": "#ifdef CONFIG_FEATURE_X",
+            "protocol_compatibility": "msg->version = PROTOCOL_V2; opcode = CMD_OPEN;",
+            "state_machine_timing": "state = STATE_RETRY; timer_start(t, timeout);",
+            "callback_dispatch": "ops->open = handler; register_callback(cb);",
+            "performance_resource": "while (retry--) { socket_fd = open(path); }",
+            "security_boundary": "if (!auth_check(token)) return PERMISSION_DENIED;",
+            "build_deploy": "target_link_libraries(foo bar)",
+        }
+
+        for expected, evidence in cases.items():
+            categories = scan.detect_risk_categories(evidence, "subsys/net/api.c", "function")
+            self.assertIn(expected, categories, evidence)
+
+    def test_architecture_categories_increase_score_and_review(self):
+        config = scan.default_scan_config("subsys/net")
+        symbol = scan.changed_symbol(
+            "parse_packet",
+            "subsys/net/protocol/parser.c",
+            "function",
+            "memcpy(buf, pkt->payload, pkt->len); if (!auth_check(token)) return ERR_DENIED;",
+        )
+
+        score, reasons = scan.score_symbol(symbol, None, config)
+        review = scan.manual_review_items([scan.risk_item("parse_packet", "function", score, reasons, ["subsys/net/protocol/parser.c"])])
+
+        self.assertGreaterEqual(score, 8)
+        self.assertTrue(any("memory_safety" in reason for reason in reasons))
+        self.assertTrue(any("security_boundary" in reason for reason in reasons))
+        self.assertEqual("parse_packet", review[0]["subject"])
+
 
 if __name__ == "__main__":
     unittest.main()

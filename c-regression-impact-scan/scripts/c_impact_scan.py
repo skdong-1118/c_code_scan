@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic C commit impact scanner for weak intranet agents.
+"""Deterministic C regression impact scanner for weak intranet agents.
 
 Python 3.6 compatible. The script favors portable Windows behavior:
 no shell pipelines, no Unix-only tools, bounded output, and JSON artifacts
@@ -40,6 +40,55 @@ MEMORY_RE = re.compile(
     re.I,
 )
 SEMANTIC_RE = re.compile(r"\b(return|NULL|nullptr|errno|error|goto|timeout|retry|len|length|size|owner|lock|unlock)\b", re.I)
+ARCH_RISK_PATTERNS = [
+    ("memory_safety", re.compile(r"\b(memcpy|memmove|memset|strcpy|strncpy|strcat|sprintf|snprintf|overflow|underflow|bounds?|index|len|length|size)\b", re.I)),
+    ("memory_leak", re.compile(r"\b(malloc|calloc|realloc|strdup|free|release|destroy|cleanup|refcount|refcnt|retain|alloc|dealloc)\b", re.I)),
+    ("abi_layout", re.compile(r"\b(struct|union|enum|typedef|sizeof|pragma\s+pack|packed|__attribute__|dllexport|visibility|export)\b", re.I)),
+    ("concurrency", re.compile(r"\b(mutex|lock|unlock|spin|rwlock|atomic|thread|task|timer|interrupt|semaphore|sem_|wait|signal|pthread)\b", re.I)),
+    ("error_handling", re.compile(r"\b(return|errno|error|err_|goto|fail|cleanup|NULL|nullptr|invalid|denied)\b", re.I)),
+    ("ownership_lifetime", re.compile(r"\b(owner|ownership|refcount|refcnt|retain|release|destroy|init|deinit|close|open|cleanup|lifetime)\b", re.I)),
+    ("macro_config", re.compile(r"^\s*#\s*(define|if|ifdef|ifndef|elif|undef)\b|\b(CONFIG_|FEATURE_|ENABLE_|DISABLE_)\w*", re.I)),
+    ("protocol_compatibility", re.compile(r"\b(protocol|version|endian|hton|ntoh|tlv|json|field|opcode|message|packet|frame|cmd_|schema)\b", re.I)),
+    ("state_machine_timing", re.compile(r"\b(state|event|timer|timeout|retry|transition|start|stop|order|sequence|schedule|delay)\b", re.I)),
+    ("callback_dispatch", re.compile(r"\b(callback|cb|ops|vtable|handler|dispatch|command|cmd_table|register|unregister|hook)\b|(?:\*\s*[A-Za-z_]\w*\s*\()", re.I)),
+    ("performance_resource", re.compile(r"\b(cpu|memory|socket|fd|file|thread|timer|poll|select|epoll|loop|while|for|cache|alloc|queue)\b", re.I)),
+    ("security_boundary", re.compile(r"\b(auth|permission|privilege|token|password|credential|path|command|injection|validate|sanitize|overflow|acl|role)\b", re.I)),
+    ("build_deploy", re.compile(r"\b(makefile|cmakelists|target_link_libraries|install|deploy|link|library|ldflags|cflags|symbol|export)\b", re.I)),
+]
+ARCH_CATEGORY_WEIGHTS = {
+    "memory_safety": 5,
+    "memory_leak": 5,
+    "abi_layout": 5,
+    "concurrency": 4,
+    "error_handling": 3,
+    "ownership_lifetime": 4,
+    "macro_config": 3,
+    "protocol_compatibility": 4,
+    "state_machine_timing": 4,
+    "callback_dispatch": 4,
+    "performance_resource": 3,
+    "security_boundary": 5,
+    "build_deploy": 3,
+}
+
+
+def detect_risk_categories(evidence, file_path, kind):
+    text = "{} {} {}".format(evidence or "", file_path or "", kind or "")
+    categories = []
+    for name, pattern in ARCH_RISK_PATTERNS:
+        if pattern.search(text) and name not in categories:
+            categories.append(name)
+    if kind == "type" and "abi_layout" not in categories:
+        categories.append("abi_layout")
+    if kind == "macro-or-conditional" and "macro_config" not in categories:
+        categories.append("macro_config")
+    if kind == "callback-or-function-pointer" and "callback_dispatch" not in categories:
+        categories.append("callback_dispatch")
+    if kind == "memory-lifetime":
+        for name in ("memory_leak", "ownership_lifetime"):
+            if name not in categories:
+                categories.append(name)
+    return categories
 
 
 def scoped_prefix(scope_path, value):
@@ -186,6 +235,7 @@ def changed_symbol(name, file_path, kind, evidence):
         "file": normalize(file_path),
         "kind": kind,
         "evidence": evidence,
+        "risk_categories": detect_risk_categories(evidence, file_path, kind),
     }
 
 
@@ -206,7 +256,7 @@ def reference_result(symbol, backend, files, config=None):
     }
 
 
-def risk_item(subject, kind, score, reasons, evidence_files):
+def risk_item(subject, kind, score, reasons, evidence_files, categories=None):
     return {
         "subject": subject,
         "kind": kind,
@@ -214,6 +264,7 @@ def risk_item(subject, kind, score, reasons, evidence_files):
         "level": level_for(score),
         "reasons": reasons,
         "evidence_files": evidence_files,
+        "risk_categories": categories or [],
     }
 
 
@@ -539,6 +590,11 @@ def score_symbol(symbol, refs, config=None):
     elif symbol["kind"] == "memory-lifetime":
         score += 5
         reasons.append("memory allocation/lifetime related change")
+    for category in symbol.get("risk_categories", []):
+        weight = ARCH_CATEGORY_WEIGHTS.get(category, 0)
+        if weight:
+            score += weight
+            reasons.append("architecture risk {} detected".format(category))
     if SEMANTIC_RE.search(symbol.get("evidence", "")):
         score += 2
         reasons.append("semantic behavior keyword changed")
@@ -595,6 +651,7 @@ def build_risk_items(files, symbols, refs, config=None):
                 score,
                 reasons,
                 list(dict.fromkeys(evidence)),
+                symbol.get("risk_categories", []),
             )
         )
     return sorted(risk_items, key=lambda x: (-x["score"], x["subject"]))
@@ -636,6 +693,21 @@ def build_impact_paths(refs, config):
     return paths
 
 
+def build_architecture_risk_summary(risks):
+    summary = {}
+    for item in risks:
+        for category in item.get("risk_categories", []):
+            entry = summary.setdefault(category, {"count": 0, "max_score": 0, "subjects": []})
+            entry["count"] += 1
+            entry["max_score"] = max(entry["max_score"], item["score"])
+            if len(entry["subjects"]) < 20:
+                entry["subjects"].append(item["subject"])
+    return [
+        {"category": category, "count": data["count"], "max_score": data["max_score"], "subjects": data["subjects"]}
+        for category, data in sorted(summary.items(), key=lambda item: (-item[1]["max_score"], item[0]))
+    ]
+
+
 def write_json(path, data):
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -649,6 +721,7 @@ def manual_review_items(risks):
         "callback/function pointer pattern changed",
         "memory allocation/lifetime related change",
         "semantic behavior keyword changed",
+        "architecture risk",
     )
     for item in risks:
         reasons = "; ".join(item["reasons"])
@@ -657,13 +730,13 @@ def manual_review_items(risks):
     return review[:30]
 
 
-def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsystems, config, impact_paths):
+def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsystems, config, impact_paths, arch_summary):
     top_level = risks[0]["level"] if risks else "low"
     max_score = risks[0]["score"] if risks else 0
     backends = set(r["backend"] for r in refs if r["backend"] != "none")
     confidence = "high" if "codegraph" in backends else "medium" if "rg" in backends else "low"
     lines = [
-        "# C Commit Impact Scan Report",
+        "# C Regression Impact Scan Report",
         "",
         "## Summary",
         "- Range: `{}`".format(commit_range),
@@ -695,6 +768,18 @@ def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsys
         )
     if all(item["level"] == "low" for item in risks):
         lines.append("| None detected | - | 0 | low | No deterministic high-risk rule matched |")
+
+    lines.extend(["", "## Architecture Risk Categories", ""])
+    if arch_summary:
+        lines.extend(["| Category | Count | Max Score | Example Subjects |", "|---|---:|---:|---|"])
+        for item in arch_summary:
+            lines.append(
+                "| `{}` | {} | {} | {} |".format(
+                    item["category"], item["count"], item["max_score"], ", ".join("`{}`".format(s) for s in item["subjects"][:5])
+                )
+            )
+    else:
+        lines.append("- No architecture-specific risk category was detected.")
 
     lines.extend(["", "## Affected Subsystem Candidates", ""])
     for sub in subsystems.get("subsystems", [])[:20]:
@@ -770,7 +855,7 @@ def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsys
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Scan C commit impact for legacy feature risk.")
+    parser = argparse.ArgumentParser(description="Scan C change impact for architecture regression risk.")
     parser.add_argument("--range", default="HEAD~1..HEAD", help="git commit range to scan")
     parser.add_argument("--out", default=".impact-scan", help="output directory")
     parser.add_argument("--subsystem", default="", help="repo-relative subsystem directory to scan, such as subsys/net")
@@ -812,6 +897,7 @@ def main():
     risks = build_risk_items(files, symbols, refs, config)
     subsystems = subsystem_impact(files, refs, config)
     impact_paths = build_impact_paths(refs, config)
+    arch_summary = build_architecture_risk_summary(risks)
 
     write_json(out / "scan_config.json", config)
     write_json(out / "codegraph_status.json", codegraph)
@@ -820,10 +906,11 @@ def main():
     write_json(out / "references.json", refs)
     write_json(out / "impact_paths.json", impact_paths)
     write_json(out / "risk_items.json", risks)
+    write_json(out / "architecture_risk_summary.json", arch_summary)
     write_json(out / "manual_review.json", manual_review_items(risks))
     write_json(out / "subsystem_impact.json", subsystems)
     (out / "risk_report.md").write_text(
-        markdown_report(args.range, codegraph, files, symbols, refs, risks, subsystems, config, impact_paths),
+        markdown_report(args.range, codegraph, files, symbols, refs, risks, subsystems, config, impact_paths, arch_summary),
         encoding="utf-8",
     )
 

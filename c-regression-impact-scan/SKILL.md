@@ -1,13 +1,13 @@
 ---
-name: c-commit-impact-scan
-description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic rules. The final deliverable must be a Markdown detection report.
+name: c-regression-impact-scan
+description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, memory safety, ABI/layout, concurrency, error handling, ownership/lifetime, macro/config behavior, protocol compatibility, state timing, callback dispatch, performance/resource usage, security boundaries, build/deploy behavior, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic architecture risk rules. The final deliverable must be a Markdown detection report.
 ---
 
-# C Commit Impact Scan
+# C Regression Impact Scan
 
 ## Purpose
 
-Use this skill in Claude Code to answer: "Did the latest C commit change common interfaces or shared modules in a way that may break old features?"
+Use this skill in Claude Code to answer: "Did the latest C change introduce architecture-level regression risk for existing subsystem behavior?"
 
 The target environment is a large commercial C codebase, usually intranet-only, often on Windows, and possibly handled by a weak AI agent. Do not ask the model to read the whole repository. Use local tools and deterministic rules first, then summarize the structured output.
 
@@ -19,25 +19,25 @@ The target environment is a large commercial C codebase, usually intranet-only, 
 4. Run the bundled scanner from the repository root with `--subsystem`:
 
    ```powershell
-   python path\to\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+   python path\to\c-regression-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
    ```
 
    On macOS or Linux:
 
    ```bash
-   python3 path/to/c-commit-impact-scan/scripts/c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode prefer
+   python3 path/to/c-regression-impact-scan/scripts/c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode prefer
    ```
 
 5. For first-time setup, if the user has approved indexing or the repository policy allows it, add `--init-codegraph`:
 
    ```powershell
-   python path\to\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer --init-codegraph
+   python path\to\c-regression-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer --init-codegraph
    ```
 
 6. If the scan must fail when CodeGraph is unavailable, use:
 
    ```powershell
-   python path\to\c-commit-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode required
+   python path\to\c-regression-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode required
    ```
 
 7. Read `.impact-scan/risk_report.md` first.
@@ -50,6 +50,7 @@ The target environment is a large commercial C codebase, usually intranet-only, 
    - `.impact-scan/references.json`
    - `.impact-scan/subsystem_impact.json`
    - `.impact-scan/risk_items.json`
+   - `.impact-scan/architecture_risk_summary.json`
    - `.impact-scan/manual_review.json`
 9. Produce a final Markdown detection report. Use `.impact-scan/risk_report.md` as the base report, refine it if needed, and ensure the final answer points to the generated `.md` file. The Markdown report must include:
    - overall risk: high, medium, or low
@@ -58,6 +59,7 @@ The target environment is a large commercial C codebase, usually intranet-only, 
    - affected legacy subsystem candidates
    - evidence paths from changed item to references
    - memory-lifetime and leak-risk findings
+   - architecture risk categories
    - mandatory manual-review items
    - suggested regression tests
    - scan limitations and confidence
@@ -170,6 +172,22 @@ Use deterministic scoring before model reasoning. Treat these as default weights
 - changed symbol referenced across 3 or more top-level subsystems: +3
 - build file or feature switch changed: +3
 
+Architecture risk category weights:
+
+- `memory_safety`: +5
+- `memory_leak`: +5
+- `abi_layout`: +5
+- `concurrency`: +4
+- `error_handling`: +3
+- `ownership_lifetime`: +4
+- `macro_config`: +3
+- `protocol_compatibility`: +4
+- `state_machine_timing`: +4
+- `callback_dispatch`: +4
+- `performance_resource`: +3
+- `security_boundary`: +5
+- `build_deploy`: +3
+
 Risk level:
 
 - `high`: score >= 8, or any public header/API change with broad references
@@ -197,6 +215,24 @@ Always highlight these C risks when present:
 - error code, return value, ownership, lifetime, or buffer size semantic changes
 - shared module changes used by legacy subsystems
 
+## Architecture Risk Categories
+
+Always include these categories in the Markdown report when detected:
+
+- `memory_safety`: buffer overflow, out-of-bounds, use-after-free, double free, uninitialized memory, unsafe copy/format operations
+- `memory_leak`: allocation/free imbalance, missing cleanup, refcount imbalance, `realloc` failure handling
+- `abi_layout`: struct/union/enum/typedef layout, packing, alignment, exported symbol, or binary interface change
+- `concurrency`: lock/unlock asymmetry, race condition, atomic/refcount behavior, thread/timer/interrupt interaction
+- `error_handling`: changed return value, error code, `goto error`, `NULL` handling, cleanup path
+- `ownership_lifetime`: ownership transfer, init/destroy order, retain/release, object lifetime across callbacks
+- `macro_config`: macro default, feature flag, platform conditional, build-time behavior
+- `protocol_compatibility`: wire format, version, endian, opcode, field meaning, persistent data compatibility
+- `state_machine_timing`: state transition, event order, timer, timeout, retry, start/stop sequence
+- `callback_dispatch`: function pointer table, ops table, handler registration, dispatch table
+- `performance_resource`: CPU, memory peak, file/socket/thread/timer resources, loop complexity, lock contention
+- `security_boundary`: auth, permission, input validation, path/command injection, integer or buffer overflow
+- `build_deploy`: Makefile/CMake/link flags, exported symbols, install/deploy behavior, default build options
+
 ## Memory Leak Focus
 
 When the report flags `memory-lifetime`, do not treat it as a normal function change. Ask for or recommend leak-focused validation:
@@ -217,6 +253,7 @@ The output report must be Markdown. Keep these sections unless there is a strong
 
 - `Summary`
 - `High And Medium Risk Items`
+- `Architecture Risk Categories`
 - `Affected Subsystem Candidates`
 - `Reference Evidence`
 - `Impact Paths`

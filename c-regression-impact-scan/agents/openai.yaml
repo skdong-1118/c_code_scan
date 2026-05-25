@@ -1,0 +1,3 @@
+display_name: C Regression Impact Scan
+short_description: Scan C changes for regression risk.
+default_prompt: In Claude Code, scan the latest C change with CodeGraph first, then generate a Markdown regression impact detection report.
