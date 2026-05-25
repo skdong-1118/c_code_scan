@@ -7,7 +7,7 @@ Use this reference when installing the scan workflow on an offline or intranet W
 Required:
 
 - Git for Windows
-- Python 3.9 or newer
+- Python 3.6 or newer
 
 Required for the preferred scan path:
 

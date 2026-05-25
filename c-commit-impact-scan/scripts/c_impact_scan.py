@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Deterministic C commit impact scanner for weak intranet agents.
 
-The script favors portable Windows behavior: no shell pipelines, no Unix-only
-tools, bounded output, and JSON artifacts for model summarization.
+Python 3.6 compatible. The script favors portable Windows behavior:
+no shell pipelines, no Unix-only tools, bounded output, and JSON artifacts
+for Claude Code summarization.
 """
-
-from __future__ import annotations
 
 import argparse
 import json
@@ -14,9 +13,7 @@ import shutil
 import subprocess
 import sys
 from collections import Counter, defaultdict
-from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Iterable
 
 
 PUBLIC_PATH_RE = re.compile(
@@ -39,96 +36,104 @@ CALLBACK_RE = re.compile(r"\b(callback|cb|ops|vtable|handler|hook)\b|(?:\*\s*[A-
 GLOBAL_RE = re.compile(r"^\s*(?:extern\s+)?[A-Za-z_][\w\s\*]*\s+[A-Za-z_]\w*(?:\s*=|\s*;)")
 
 
-@dataclass
-class ChangedFile:
-    path: str
-    status: str
-    added: int = 0
-    deleted: int = 0
-    is_c: bool = False
-    is_header: bool = False
-    is_public_path: bool = False
-    is_build_file: bool = False
+def changed_file(path, status, added=0, deleted=0):
+    path = normalize(path)
+    return {
+        "path": path,
+        "status": status,
+        "added": added,
+        "deleted": deleted,
+        "is_c": bool(C_FILE_RE.search(path)),
+        "is_header": bool(HEADER_RE.search(path)),
+        "is_public_path": bool(PUBLIC_PATH_RE.search(path)),
+        "is_build_file": bool(BUILD_FILE_RE.search(path)),
+    }
 
 
-@dataclass
-class ChangedSymbol:
-    name: str
-    file: str
-    kind: str
-    evidence: str
+def changed_symbol(name, file_path, kind, evidence):
+    return {
+        "name": name,
+        "file": normalize(file_path),
+        "kind": kind,
+        "evidence": evidence,
+    }
 
 
-@dataclass
-class ReferenceResult:
-    symbol: str
-    backend: str
-    files: list[str]
-    file_count: int
-    subsystem_count: int
+def reference_result(symbol, backend, files):
+    subsystems = set(subsystem_for(path) for path in files)
+    return {
+        "symbol": symbol,
+        "backend": backend,
+        "files": files,
+        "file_count": len(files),
+        "subsystem_count": len(subsystems),
+    }
 
 
-@dataclass
-class RiskItem:
-    subject: str
-    kind: str
-    score: int
-    level: str
-    reasons: list[str]
-    evidence_files: list[str]
+def risk_item(subject, kind, score, reasons, evidence_files):
+    return {
+        "subject": subject,
+        "kind": kind,
+        "score": score,
+        "level": level_for(score),
+        "reasons": reasons,
+        "evidence_files": evidence_files,
+    }
 
 
-@dataclass
-class CodeGraphStatus:
-    mode: str
-    available: bool
-    executable: str | None
-    index_present: bool
-    init_attempted: bool
-    init_succeeded: bool
-    used_for_symbols: int
-    fallback_used_for_symbols: int
-    errors: list[str]
+def codegraph_status(mode):
+    exe = find_codegraph()
+    return {
+        "mode": mode,
+        "available": bool(exe),
+        "executable": exe,
+        "index_present": False,
+        "init_attempted": False,
+        "init_succeeded": False,
+        "used_for_symbols": 0,
+        "fallback_used_for_symbols": 0,
+        "errors": [],
+    }
 
 
-def run(args: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run(args, cwd, check=True):
     try:
         return subprocess.run(
             args,
             cwd=str(cwd),
-            text=True,
+            universal_newlines=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=check,
         )
-    except FileNotFoundError as exc:
-        raise RuntimeError(f"missing command: {args[0]}") from exc
+    except FileNotFoundError:
+        raise RuntimeError("missing command: {}".format(args[0]))
 
 
-def git(args: list[str], cwd: Path) -> str:
-    result = run(["git", *args], cwd)
+def git(args, cwd):
+    result = run(["git"] + args, cwd)
     return result.stdout
 
 
-def ensure_git_repo(cwd: Path) -> Path:
+def ensure_git_repo(cwd):
     root = git(["rev-parse", "--show-toplevel"], cwd).strip()
     return Path(root)
 
 
-def normalize(path: str) -> str:
+def normalize(path):
     return path.replace("\\", "/")
 
 
-def subsystem_for(path: str, depth: int = 2) -> str:
+def subsystem_for(path, depth=2):
     parts = [p for p in normalize(path).split("/") if p]
     if not parts:
         return "."
     return "/".join(parts[:depth])
 
 
-def parse_changed_files(repo: Path, commit_range: str) -> list[ChangedFile]:
+def parse_changed_files(repo, commit_range):
     output = git(["diff", "--numstat", "--name-status", commit_range], repo)
-    files: dict[str, ChangedFile] = {}
+    files = {}
     for line in output.splitlines():
         if not line.strip():
             continue
@@ -137,23 +142,17 @@ def parse_changed_files(repo: Path, commit_range: str) -> list[ChangedFile]:
             added = int(parts[0])
             deleted = int(parts[1]) if parts[1].isdigit() else 0
             path = normalize(parts[2])
-            files.setdefault(path, ChangedFile(path=path, status="M"))
-            files[path].added = added
-            files[path].deleted = deleted
+            item = files.setdefault(path, changed_file(path, "M"))
+            item["added"] = added
+            item["deleted"] = deleted
         elif len(parts) >= 2:
             status = parts[0]
             path = normalize(parts[-1])
-            files.setdefault(path, ChangedFile(path=path, status=status))
-
-    for item in files.values():
-        item.is_c = bool(C_FILE_RE.search(item.path))
-        item.is_header = bool(HEADER_RE.search(item.path))
-        item.is_public_path = bool(PUBLIC_PATH_RE.search(item.path))
-        item.is_build_file = bool(BUILD_FILE_RE.search(item.path))
-    return sorted(files.values(), key=lambda x: x.path)
+            files.setdefault(path, changed_file(path, status))
+    return sorted(files.values(), key=lambda x: x["path"])
 
 
-def diff_lines(repo: Path, commit_range: str) -> Iterable[tuple[str, str]]:
+def diff_lines(repo, commit_range):
     output = git(["diff", "--unified=0", commit_range, "--", "*.c", "*.h"], repo)
     current_file = ""
     for line in output.splitlines():
@@ -166,8 +165,8 @@ def diff_lines(repo: Path, commit_range: str) -> Iterable[tuple[str, str]]:
             yield current_file, line[1:]
 
 
-def extract_symbols(repo: Path, commit_range: str, max_symbols: int) -> list[ChangedSymbol]:
-    symbols: dict[tuple[str, str, str], ChangedSymbol] = {}
+def extract_symbols(repo, commit_range, max_symbols):
+    symbols = {}
     for file_path, line in diff_lines(repo, commit_range):
         if not file_path:
             continue
@@ -186,7 +185,7 @@ def extract_symbols(repo: Path, commit_range: str, max_symbols: int) -> list[Cha
             kind = "type"
             ids = IDENT_RE.findall(stripped)
             for token in ids:
-                if token not in {"typedef", "struct", "union", "enum", "const", "volatile"}:
+                if token not in ("typedef", "struct", "union", "enum", "const", "volatile"):
                     name = token
                     break
         else:
@@ -207,55 +206,47 @@ def extract_symbols(repo: Path, commit_range: str, max_symbols: int) -> list[Cha
 
         if name and kind:
             key = (name, file_path, kind)
-            symbols[key] = ChangedSymbol(name=name, file=file_path, kind=kind, evidence=stripped[:240])
+            symbols[key] = changed_symbol(name, file_path, kind, stripped[:240])
             if len(symbols) >= max_symbols:
                 break
     return list(symbols.values())
 
 
-def find_codegraph() -> str | None:
+def find_codegraph():
     return shutil.which("codegraph") or shutil.which("codegraph.exe")
 
 
-def has_codegraph_index(repo: Path) -> bool:
+def has_codegraph_index(repo):
     return (repo / ".codegraph").exists()
 
 
-def prepare_codegraph(repo: Path, mode: str, init_codegraph: bool) -> CodeGraphStatus:
-    exe = find_codegraph()
-    status = CodeGraphStatus(
-        mode=mode,
-        available=bool(exe),
-        executable=exe,
-        index_present=has_codegraph_index(repo),
-        init_attempted=False,
-        init_succeeded=False,
-        used_for_symbols=0,
-        fallback_used_for_symbols=0,
-        errors=[],
-    )
+def prepare_codegraph(repo, mode, init_codegraph):
+    status = codegraph_status(mode)
+    status["index_present"] = has_codegraph_index(repo)
     if mode == "off":
         return status
-    if not exe:
-        status.errors.append("codegraph executable not found")
+    if not status["executable"]:
+        status["errors"].append("codegraph executable not found")
         return status
-    if status.index_present:
+    if status["index_present"]:
         return status
     if not init_codegraph:
-        status.errors.append("CodeGraph index directory .codegraph was not found; rerun with --init-codegraph if indexing is approved")
+        status["errors"].append(
+            "CodeGraph index directory .codegraph was not found; rerun with --init-codegraph if indexing is approved"
+        )
         return status
 
-    status.init_attempted = True
+    status["init_attempted"] = True
     init_commands = [
-        [exe, "init"],
-        [exe, "index"],
+        [status["executable"], "init"],
+        [status["executable"], "index"],
     ]
     any_success = False
     for command in init_commands:
         result = subprocess.run(
             command,
             cwd=str(repo),
-            text=True,
+            universal_newlines=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
@@ -263,26 +254,26 @@ def prepare_codegraph(repo: Path, mode: str, init_codegraph: bool) -> CodeGraphS
         if result.returncode == 0:
             any_success = True
         elif result.stderr.strip():
-            status.errors.append(f"{' '.join(command)} failed: {result.stderr.strip()[:500]}")
-    status.index_present = has_codegraph_index(repo)
-    status.init_succeeded = any_success or status.index_present
-    if not status.index_present:
-        status.errors.append("CodeGraph init/index did not create a .codegraph directory")
+            status["errors"].append("{} failed: {}".format(" ".join(command), result.stderr.strip()[:500]))
+    status["index_present"] = has_codegraph_index(repo)
+    status["init_succeeded"] = any_success or status["index_present"]
+    if not status["index_present"]:
+        status["errors"].append("CodeGraph init/index did not create a .codegraph directory")
     return status
 
 
-def run_codegraph_impact(repo: Path, symbol: str, limit: int, status: CodeGraphStatus) -> list[str]:
-    if status.mode == "off" or not status.executable:
+def run_codegraph_impact(repo, symbol, limit, status):
+    if status["mode"] == "off" or not status["executable"]:
         return []
     commands = [
-        [status.executable, "impact", symbol],
-        [status.executable, "impact", "--symbol", symbol],
+        [status["executable"], "impact", symbol],
+        [status["executable"], "impact", "--symbol", symbol],
     ]
     for command in commands:
         result = subprocess.run(
             command,
             cwd=str(repo),
-            text=True,
+            universal_newlines=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
@@ -292,8 +283,8 @@ def run_codegraph_impact(repo: Path, symbol: str, limit: int, status: CodeGraphS
     return []
 
 
-def extract_paths_from_text(text: str, limit: int) -> list[str]:
-    paths: list[str] = []
+def extract_paths_from_text(text, limit):
+    paths = []
     seen = set()
     for match in re.finditer(r"[\w./\\:-]+\.(?:c|h)\b", text, re.I):
         path = normalize(match.group(0))
@@ -305,15 +296,15 @@ def extract_paths_from_text(text: str, limit: int) -> list[str]:
     return paths
 
 
-def rg_references(repo: Path, symbol: str, limit: int) -> list[str]:
+def rg_references(repo, symbol, limit):
     exe = shutil.which("rg") or shutil.which("rg.exe")
     if not exe:
         return []
-    pattern = rf"\b{re.escape(symbol)}\b"
+    pattern = r"\b{}\b".format(re.escape(symbol))
     result = subprocess.run(
         [exe, "--files-with-matches", "--glob", "*.c", "--glob", "*.h", pattern, "."],
         cwd=str(repo),
-        text=True,
+        universal_newlines=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
@@ -330,84 +321,73 @@ def rg_references(repo: Path, symbol: str, limit: int) -> list[str]:
     return paths
 
 
-def gather_references(
-    repo: Path, symbols: list[ChangedSymbol], limit: int, codegraph_status: CodeGraphStatus
-) -> list[ReferenceResult]:
+def gather_references(repo, symbols, limit, codegraph):
     results = []
     for symbol in symbols:
         backend = "none"
-        files = run_codegraph_impact(repo, symbol.name, limit, codegraph_status)
+        files = run_codegraph_impact(repo, symbol["name"], limit, codegraph)
         if files:
             backend = "codegraph"
-            codegraph_status.used_for_symbols += 1
+            codegraph["used_for_symbols"] += 1
         else:
-            files = rg_references(repo, symbol.name, limit)
+            files = rg_references(repo, symbol["name"], limit)
             if files:
                 backend = "rg"
-                codegraph_status.fallback_used_for_symbols += 1
-        subsystems = {subsystem_for(path) for path in files}
-        results.append(
-            ReferenceResult(
-                symbol=symbol.name,
-                backend=backend,
-                files=files,
-                file_count=len(files),
-                subsystem_count=len(subsystems),
-            )
-        )
+                codegraph["fallback_used_for_symbols"] += 1
+        results.append(reference_result(symbol["name"], backend, files))
     return results
 
 
-def score_file(item: ChangedFile) -> tuple[int, list[str]]:
+def score_file(item):
     score = 0
     reasons = []
-    if item.is_header:
+    if item["is_header"]:
         score += 4
         reasons.append("header file changed")
-    if item.is_public_path:
+    if item["is_public_path"]:
         score += 3
         reasons.append("public/shared path changed")
-    if item.is_build_file:
+    if item["is_build_file"]:
         score += 3
         reasons.append("build or feature switch file changed")
-    if item.added + item.deleted >= 80:
+    if item["added"] + item["deleted"] >= 80:
         score += 2
         reasons.append("large change size")
     return score, reasons
 
 
-def score_symbol(symbol: ChangedSymbol, refs: ReferenceResult | None) -> tuple[int, list[str]]:
+def score_symbol(symbol, refs):
     score = 0
     reasons = []
-    if symbol.kind == "function":
+    if symbol["kind"] == "function":
         score += 4
         reasons.append("function declaration or definition changed")
-    elif symbol.kind == "type":
+    elif symbol["kind"] == "type":
         score += 4
         reasons.append("struct/union/enum/typedef changed")
-    elif symbol.kind == "macro-or-conditional":
+    elif symbol["kind"] == "macro-or-conditional":
         score += 3
         reasons.append("macro or conditional compilation changed")
-    elif symbol.kind == "callback-or-function-pointer":
+    elif symbol["kind"] == "callback-or-function-pointer":
         score += 4
         reasons.append("callback/function pointer pattern changed")
-    elif symbol.kind == "global":
+    elif symbol["kind"] == "global":
         score += 2
         reasons.append("global data changed")
-    if PUBLIC_PATH_RE.search(symbol.file):
+    if PUBLIC_PATH_RE.search(symbol["file"]):
         score += 3
         reasons.append("symbol is in public/shared path")
     if refs:
-        if refs.file_count >= 10:
+        if refs["file_count"] >= 10:
             score += 3
-            reasons.append(f"referenced by {refs.file_count} files")
-        if refs.subsystem_count >= 3:
+            reasons.append("referenced by {} files".format(refs["file_count"]))
+        if refs["subsystem_count"] >= 3:
             score += 3
-            reasons.append(f"spans {refs.subsystem_count} subsystems")
+            reasons.append("spans {} subsystems".format(refs["subsystem_count"]))
     return score, reasons
 
 
-def level_for(score: int) -> str:
+def level_for(score):
     if score >= 8:
         return "high"
     if score >= 4:
@@ -415,52 +395,40 @@ def level_for(score: int) -> str:
     return "low"
 
 
-def build_risk_items(
-    files: list[ChangedFile], symbols: list[ChangedSymbol], refs: list[ReferenceResult]
-) -> list[RiskItem]:
-    risk_items: list[RiskItem] = []
-    refs_by_symbol = {r.symbol: r for r in refs}
+def build_risk_items(files, symbols, refs):
+    risk_items = []
+    refs_by_symbol = {r["symbol"]: r for r in refs}
     for item in files:
         score, reasons = score_file(item)
         if score:
-            risk_items.append(
-                RiskItem(
-                    subject=item.path,
-                    kind="file",
-                    score=score,
-                    level=level_for(score),
-                    reasons=reasons,
-                    evidence_files=[item.path],
-                )
-            )
+            risk_items.append(risk_item(item["path"], "file", score, reasons, [item["path"]]))
     for symbol in symbols:
-        ref = refs_by_symbol.get(symbol.name)
+        ref = refs_by_symbol.get(symbol["name"])
         score, reasons = score_symbol(symbol, ref)
-        evidence = [symbol.file]
+        evidence = [symbol["file"]]
         if ref:
-            evidence.extend(ref.files[:10])
+            evidence.extend(ref["files"][:10])
         risk_items.append(
-            RiskItem(
-                subject=symbol.name,
-                kind=symbol.kind,
-                score=score,
-                level=level_for(score),
-                reasons=reasons,
-                evidence_files=list(dict.fromkeys(evidence)),
+            risk_item(
+                symbol["name"],
+                symbol["kind"],
+                score,
+                reasons,
+                list(dict.fromkeys(evidence)),
             )
         )
-    return sorted(risk_items, key=lambda x: (-x.score, x.subject))
+    return sorted(risk_items, key=lambda x: (-x["score"], x["subject"]))
 
 
-def subsystem_impact(files: list[ChangedFile], refs: list[ReferenceResult]) -> dict[str, object]:
-    counter: Counter[str] = Counter()
-    evidence: dict[str, set[str]] = defaultdict(set)
+def subsystem_impact(files, refs):
+    counter = Counter()
+    evidence = defaultdict(set)
     for item in files:
-        sub = subsystem_for(item.path)
+        sub = subsystem_for(item["path"])
         counter[sub] += 1
-        evidence[sub].add(item.path)
+        evidence[sub].add(item["path"])
     for ref in refs:
-        for path in ref.files:
+        for path in ref["files"]:
             sub = subsystem_for(path)
             counter[sub] += 1
             evidence[sub].add(path)
@@ -472,37 +440,29 @@ def subsystem_impact(files: list[ChangedFile], refs: list[ReferenceResult]) -> d
     }
 
 
-def write_json(path: Path, data: object) -> None:
+def write_json(path, data):
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def markdown_report(
-    commit_range: str,
-    codegraph_status: CodeGraphStatus,
-    files: list[ChangedFile],
-    symbols: list[ChangedSymbol],
-    refs: list[ReferenceResult],
-    risks: list[RiskItem],
-    subsystems: dict[str, object],
-) -> str:
-    top_level = risks[0].level if risks else "low"
-    max_score = risks[0].score if risks else 0
-    backends = {r.backend for r in refs if r.backend != "none"}
+def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsystems):
+    top_level = risks[0]["level"] if risks else "low"
+    max_score = risks[0]["score"] if risks else 0
+    backends = set(r["backend"] for r in refs if r["backend"] != "none")
     confidence = "high" if "codegraph" in backends else "medium" if "rg" in backends else "low"
     lines = [
         "# C Commit Impact Scan Report",
         "",
         "## Summary",
-        f"- Range: `{commit_range}`",
-        f"- Overall risk: **{top_level}**",
-        f"- Max score: {max_score}",
-        f"- Confidence: **{confidence}**",
-        f"- CodeGraph mode: `{codegraph_status.mode}`",
-        f"- CodeGraph available: {'yes' if codegraph_status.available else 'no'}",
-        f"- CodeGraph used for symbols: {codegraph_status.used_for_symbols}",
-        f"- Fallback used for symbols: {codegraph_status.fallback_used_for_symbols}",
-        f"- Changed files: {len(files)}",
-        f"- Changed symbols detected: {len(symbols)}",
+        "- Range: `{}`".format(commit_range),
+        "- Overall risk: **{}**".format(top_level),
+        "- Max score: {}".format(max_score),
+        "- Confidence: **{}**".format(confidence),
+        "- CodeGraph mode: `{}`".format(codegraph["mode"]),
+        "- CodeGraph available: {}".format("yes" if codegraph["available"] else "no"),
+        "- CodeGraph used for symbols: {}".format(codegraph["used_for_symbols"]),
+        "- Fallback used for symbols: {}".format(codegraph["fallback_used_for_symbols"]),
+        "- Changed files: {}".format(len(files)),
+        "- Changed symbols detected: {}".format(len(symbols)),
         "",
         "## High And Medium Risk Items",
         "",
@@ -510,25 +470,30 @@ def markdown_report(
         "|---|---|---:|---|---|",
     ]
     for item in risks[:30]:
-        if item.level == "low":
+        if item["level"] == "low":
             continue
-        reasons = "; ".join(item.reasons)
-        lines.append(f"| `{item.subject}` | {item.kind} | {item.score} | {item.level} | {reasons} |")
-    if all(item.level == "low" for item in risks):
+        reasons = "; ".join(item["reasons"])
+        lines.append(
+            "| `{}` | {} | {} | {} | {} |".format(
+                item["subject"], item["kind"], item["score"], item["level"], reasons
+            )
+        )
+    if all(item["level"] == "low" for item in risks):
         lines.append("| None detected | - | 0 | low | No deterministic high-risk rule matched |")
 
     lines.extend(["", "## Affected Subsystem Candidates", ""])
     for sub in subsystems.get("subsystems", [])[:20]:
-        lines.append(f"- `{sub['name']}`: {sub['count']} evidence hits")
+        lines.append("- `{}`: {} evidence hits".format(sub["name"], sub["count"]))
 
     lines.extend(["", "## Reference Evidence", ""])
     for ref in refs[:30]:
-        if not ref.files:
+        if not ref["files"]:
             continue
-        sample = ", ".join(f"`{p}`" for p in ref.files[:8])
+        sample = ", ".join("`{}`".format(p) for p in ref["files"][:8])
         lines.append(
-            f"- `{ref.symbol}` via {ref.backend}: {ref.file_count} files, "
-            f"{ref.subsystem_count} subsystems. {sample}"
+            "- `{}` via {}: {} files, {} subsystems. {}".format(
+                ref["symbol"], ref["backend"], ref["file_count"], ref["subsystem_count"], sample
+            )
         )
 
     lines.extend(
@@ -546,14 +511,14 @@ def markdown_report(
             "- Function pointer and callback relationships are heuristic unless CodeGraph captures them in the local index.",
         ]
     )
-    if codegraph_status.errors:
+    if codegraph["errors"]:
         lines.extend(["", "## CodeGraph Notes"])
-        for error in codegraph_status.errors[:8]:
-            lines.append(f"- {error}")
+        for error in codegraph["errors"][:8]:
+            lines.append("- {}".format(error))
     return "\n".join(lines) + "\n"
 
 
-def main() -> int:
+def main():
     parser = argparse.ArgumentParser(description="Scan C commit impact for legacy feature risk.")
     parser.add_argument("--range", default="HEAD~1..HEAD", help="git commit range to scan")
     parser.add_argument("--out", default=".impact-scan", help="output directory")
@@ -576,36 +541,36 @@ def main() -> int:
     try:
         repo = ensure_git_repo(cwd)
     except Exception as exc:
-        print(f"error: not a git repository or git failed: {exc}", file=sys.stderr)
+        print("error: not a git repository or git failed: {}".format(exc), file=sys.stderr)
         return 2
 
     out = repo / args.out
     out.mkdir(parents=True, exist_ok=True)
 
-    codegraph_status = prepare_codegraph(repo, args.codegraph_mode, args.init_codegraph)
-    if args.codegraph_mode == "required" and not codegraph_status.available:
-        write_json(out / "codegraph_status.json", asdict(codegraph_status))
+    codegraph = prepare_codegraph(repo, args.codegraph_mode, args.init_codegraph)
+    if args.codegraph_mode == "required" and not codegraph["available"]:
+        write_json(out / "codegraph_status.json", codegraph)
         print("error: CodeGraph is required but codegraph executable was not found", file=sys.stderr)
         return 3
 
     files = parse_changed_files(repo, args.range)
     symbols = extract_symbols(repo, args.range, args.max_symbols)
-    refs = gather_references(repo, symbols, args.max_refs, codegraph_status)
+    refs = gather_references(repo, symbols, args.max_refs, codegraph)
     risks = build_risk_items(files, symbols, refs)
     subsystems = subsystem_impact(files, refs)
 
-    write_json(out / "codegraph_status.json", asdict(codegraph_status))
-    write_json(out / "diff_summary.json", [asdict(item) for item in files])
-    write_json(out / "changed_symbols.json", [asdict(item) for item in symbols])
-    write_json(out / "references.json", [asdict(item) for item in refs])
-    write_json(out / "risk_items.json", [asdict(item) for item in risks])
+    write_json(out / "codegraph_status.json", codegraph)
+    write_json(out / "diff_summary.json", files)
+    write_json(out / "changed_symbols.json", symbols)
+    write_json(out / "references.json", refs)
+    write_json(out / "risk_items.json", risks)
     write_json(out / "subsystem_impact.json", subsystems)
     (out / "risk_report.md").write_text(
-        markdown_report(args.range, codegraph_status, files, symbols, refs, risks, subsystems),
+        markdown_report(args.range, codegraph, files, symbols, refs, risks, subsystems),
         encoding="utf-8",
     )
 
-    print(f"wrote {out / 'risk_report.md'}")
+    print("wrote {}".format(out / "risk_report.md"))
     return 0
 
 
