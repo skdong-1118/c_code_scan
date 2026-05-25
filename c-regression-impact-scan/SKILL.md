@@ -1,6 +1,6 @@
 ---
 name: c-regression-impact-scan
-description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, memory safety, ABI/layout, concurrency, error handling, ownership/lifetime, macro/config behavior, protocol compatibility, state timing, callback dispatch, performance/resource usage, security boundaries, build/deploy behavior, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic architecture risk rules. The final deliverable must be a Markdown detection report.
+description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, memory safety, ABI/layout, concurrency, error handling, ownership/lifetime, macro/config behavior, protocol compatibility, state timing, callback dispatch, performance/resource usage, security boundaries, build/deploy behavior, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic architecture risk rules. The final deliverable must be a Chinese Markdown detection report.
 ---
 
 # C Regression Impact Scan
@@ -52,7 +52,7 @@ The target environment is a large commercial C codebase, usually intranet-only, 
    - `.impact-scan/risk_items.json`
    - `.impact-scan/architecture_risk_summary.json`
    - `.impact-scan/manual_review.json`
-9. Produce a final Markdown detection report. Use `.impact-scan/risk_report.md` as the base report, refine it if needed, and ensure the final answer points to the generated `.md` file. The Markdown report must include:
+9. Produce a final Chinese Markdown detection report. Use `.impact-scan/risk_report.md` as the base report, refine it if needed, and ensure the final answer points to the generated `.md` file. The Markdown report must include:
    - overall risk: high, medium, or low
    - whether CodeGraph was used successfully
    - high-risk changed files and symbols
@@ -64,7 +64,7 @@ The target environment is a large commercial C codebase, usually intranet-only, 
    - suggested regression tests
    - scan limitations and confidence
 
-The final deliverable is not just a chat summary. It must be a Markdown report file, normally `.impact-scan/risk_report.md`.
+The final deliverable is not just a chat summary. It must be a Chinese Markdown report file, normally `.impact-scan/risk_report.md`.
 
 ## Subsystem Configuration
 
@@ -142,7 +142,7 @@ Claude Code should keep the interaction simple:
 
 1. Run the scanner.
 2. Read the generated Markdown and JSON artifacts.
-3. Ensure `.impact-scan/risk_report.md` exists and is the final Markdown detection report.
+3. Ensure `.impact-scan/risk_report.md` exists and is the final Chinese Markdown detection report.
 4. Avoid opening broad repository files unless a specific risk item needs evidence.
 
 If CodeGraph is missing, tell the user clearly and either:
@@ -202,22 +202,22 @@ Confidence:
 
 ## C-Specific Review Focus
 
-Always highlight these C risks when present:
+发现以下 C 风险时必须在报告中突出说明：
 
-- public header changes
-- struct layout changes, including field order and field type changes
-- enum numeric value changes
-- macro default value changes
-- `#ifdef` / `#if` behavior changes
-- callback registration and function pointer table changes
-- allocation/free ownership changes and possible leak paths
+- 公共头文件变化
+- 结构体布局变化，包括字段顺序和字段类型变化
+- 枚举值变化
+- 宏默认值变化
+- `#ifdef` / `#if` 行为变化
+- 回调注册和函数指针表变化
+- 分配/释放所有权变化以及潜在泄漏路径
 - `malloc`, `calloc`, `realloc`, `strdup`, `free`, `release`, `destroy`, `cleanup`, `refcount`, buffer size, and error-exit path changes
-- error code, return value, ownership, lifetime, or buffer size semantic changes
-- shared module changes used by legacy subsystems
+- 错误码、返回值、所有权、生命周期或 buffer size 语义变化
+- 老功能子系统使用的共享模块变化
 
-## Architecture Risk Categories
+## 架构风险类别
 
-Always include these categories in the Markdown report when detected:
+检测到以下类别时，必须写入中文 Markdown 报告：
 
 - `memory_safety`: buffer overflow, out-of-bounds, use-after-free, double free, uninitialized memory, unsafe copy/format operations
 - `memory_leak`: allocation/free imbalance, missing cleanup, refcount imbalance, `realloc` failure handling
@@ -233,34 +233,34 @@ Always include these categories in the Markdown report when detected:
 - `security_boundary`: auth, permission, input validation, path/command injection, integer or buffer overflow
 - `build_deploy`: Makefile/CMake/link flags, exported symbols, install/deploy behavior, default build options
 
-## Memory Leak Focus
+## 内存泄漏关注点
 
-When the report flags `memory-lifetime`, do not treat it as a normal function change. Ask for or recommend leak-focused validation:
+当报告标记 `memory-lifetime` 时，不要把它当成普通函数变化处理。需要要求或建议进行内存泄漏专项验证：
 
-- allocation success and failure paths
-- early `return` / `goto error` cleanup paths
-- ownership transfer between caller and callee
-- reference count increments and decrements
-- buffer resize and `realloc` error handling
-- callback cleanup and module unload paths
-- legacy paths that call the changed API repeatedly or in long-running sessions
+- 内存分配成功和失败路径
+- 提前 `return` / `goto error` 清理路径
+- 调用者和被调用者之间的所有权转移
+- 引用计数递增和递减是否平衡
+- buffer resize 和 `realloc` 错误处理
+- callback 清理和模块卸载路径
+- 重复调用或长时间运行的老功能路径
 
-If no dynamic analysis is available in the intranet environment, recommend targeted stress loops and process memory monitoring for affected legacy features.
+如果内网环境没有动态分析工具，建议对受影响老功能做定向压力循环和进程内存监控。
 
 ## Report Style
 
-The output report must be Markdown. Keep these sections unless there is a strong reason to add more:
+The output report must be Chinese Markdown. Keep these sections unless there is a strong reason to add more:
 
-- `Summary`
-- `High And Medium Risk Items`
-- `Architecture Risk Categories`
-- `Affected Subsystem Candidates`
-- `Reference Evidence`
-- `Impact Paths`
-- `Must Review Manually`
-- `Memory Leak Focus`
-- `Suggested Regression Checks`
-- `Limitations`
+- `概要`
+- `高/中风险项`
+- `架构风险类别`
+- `受影响子系统候选`
+- `引用证据`
+- `影响路径`
+- `必须人工 Review`
+- `内存泄漏关注点`
+- `建议回归检查`
+- `局限性`
 
 Use evidence-backed language. Prefer:
 
