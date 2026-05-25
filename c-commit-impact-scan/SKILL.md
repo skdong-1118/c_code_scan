@@ -1,6 +1,6 @@
 ---
 name: c-commit-impact-scan
-description: Use in Claude Code when scanning a large C codebase commit for possible impact on legacy features, especially in an offline or intranet Windows agent environment. This skill prioritizes local CodeGraph impact scanning, then falls back to ripgrep and deterministic rules before producing a regression risk report.
+description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic rules.
 ---
 
 # C Commit Impact Scan
