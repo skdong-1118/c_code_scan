@@ -34,6 +34,100 @@ TYPE_RE = re.compile(r"\b(struct|union|enum|typedef)\b")
 MACRO_RE = re.compile(r"^\s*#\s*(define|if|ifdef|ifndef|elif|undef)\b")
 CALLBACK_RE = re.compile(r"\b(callback|cb|ops|vtable|handler|hook)\b|(?:\*\s*[A-Za-z_]\w*\s*\()", re.I)
 GLOBAL_RE = re.compile(r"^\s*(?:extern\s+)?[A-Za-z_][\w\s\*]*\s+[A-Za-z_]\w*(?:\s*=|\s*;)")
+MEMORY_RE = re.compile(
+    r"\b(malloc|calloc|realloc|strdup|free|alloc|dealloc|release|destroy|cleanup|refcount|refcnt|retain|"
+    r"memcpy|memmove|memset|sizeof)\b",
+    re.I,
+)
+SEMANTIC_RE = re.compile(r"\b(return|NULL|nullptr|errno|error|goto|timeout|retry|len|length|size|owner|lock|unlock)\b", re.I)
+
+
+def default_scan_config():
+    return {
+        "public_interfaces": ["include/", "inc/", "common/", "public/", "api/", "sdk/include/"],
+        "legacy_paths": ["legacy/", "old/", "stable/"],
+        "high_risk_paths": ["platform/", "protocol/", "storage/", "upgrade/", "adapter/", "common/"],
+        "memory_sensitive_paths": ["memory/", "mem/", "buffer/", "session/", "core/"],
+        "low_risk_paths": ["test/", "tests/", "doc/", "docs/"],
+        "subsystems": {},
+    }
+
+
+def parse_simple_yaml_lists(text):
+    data = {}
+    current_key = None
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        if not line.startswith(" ") and line.endswith(":"):
+            current_key = line[:-1].strip()
+            data.setdefault(current_key, [])
+            continue
+        stripped = line.strip()
+        if current_key and stripped.startswith("- "):
+            data.setdefault(current_key, []).append(stripped[2:].strip().strip("'\""))
+    return data
+
+
+def load_scan_config(repo):
+    config = default_scan_config()
+    json_path = repo / ".impact-scan.json"
+    yaml_paths = [repo / ".impact-scan.yml", repo / ".impact-scan.yaml"]
+    loaded = {}
+    if json_path.exists():
+        loaded = json.loads(json_path.read_text(encoding="utf-8"))
+    else:
+        for path in yaml_paths:
+            if path.exists():
+                loaded = parse_simple_yaml_lists(path.read_text(encoding="utf-8"))
+                break
+    for key in (
+        "public_interfaces",
+        "legacy_paths",
+        "high_risk_paths",
+        "memory_sensitive_paths",
+        "low_risk_paths",
+    ):
+        values = loaded.get(key)
+        if isinstance(values, list):
+            for value in values:
+                normalized = normalize(str(value))
+                if normalized and normalized not in config[key]:
+                    config[key].append(normalized)
+    if isinstance(loaded.get("subsystems"), dict):
+        config["subsystems"] = loaded["subsystems"]
+    return config
+
+
+def path_matches_prefix(path, prefixes):
+    normalized = normalize(path).lower()
+    for prefix in prefixes:
+        normalized_prefix = normalize(prefix).lower().strip()
+        if not normalized_prefix:
+            continue
+        if normalized.startswith(normalized_prefix.rstrip("/") + "/") or normalized == normalized_prefix.rstrip("/"):
+            return True
+    return False
+
+
+def configured_subsystem_for(path, config):
+    normalized = normalize(path)
+    for name, value in config.get("subsystems", {}).items():
+        paths = value.get("paths", []) if isinstance(value, dict) else value
+        if isinstance(paths, list) and path_matches_prefix(normalized, paths):
+            return name
+    return subsystem_for(normalized)
+
+
+def apply_config_to_file(item, config):
+    item["is_public_interface"] = item["is_public_path"] or path_matches_prefix(item["path"], config["public_interfaces"])
+    item["is_legacy_path"] = path_matches_prefix(item["path"], config["legacy_paths"])
+    item["is_high_risk_path"] = path_matches_prefix(item["path"], config["high_risk_paths"])
+    item["is_memory_sensitive_path"] = path_matches_prefix(item["path"], config["memory_sensitive_paths"])
+    item["is_low_risk_path"] = path_matches_prefix(item["path"], config["low_risk_paths"])
+    item["subsystem"] = configured_subsystem_for(item["path"], config)
+    return item
 
 
 def changed_file(path, status, added=0, deleted=0):
@@ -47,6 +141,12 @@ def changed_file(path, status, added=0, deleted=0):
         "is_header": bool(HEADER_RE.search(path)),
         "is_public_path": bool(PUBLIC_PATH_RE.search(path)),
         "is_build_file": bool(BUILD_FILE_RE.search(path)),
+        "is_public_interface": False,
+        "is_legacy_path": False,
+        "is_high_risk_path": False,
+        "is_memory_sensitive_path": False,
+        "is_low_risk_path": False,
+        "subsystem": subsystem_for(path),
     }
 
 
@@ -59,14 +159,20 @@ def changed_symbol(name, file_path, kind, evidence):
     }
 
 
-def reference_result(symbol, backend, files):
-    subsystems = set(subsystem_for(path) for path in files)
+def reference_result(symbol, backend, files, config=None):
+    if config:
+        subsystems = set(configured_subsystem_for(path, config) for path in files)
+        legacy_file_count = len([path for path in files if path_matches_prefix(path, config["legacy_paths"])])
+    else:
+        subsystems = set(subsystem_for(path) for path in files)
+        legacy_file_count = 0
     return {
         "symbol": symbol,
         "backend": backend,
         "files": files,
         "file_count": len(files),
         "subsystem_count": len(subsystems),
+        "legacy_file_count": legacy_file_count,
     }
 
 
@@ -131,7 +237,7 @@ def subsystem_for(path, depth=2):
     return "/".join(parts[:depth])
 
 
-def parse_changed_files(repo, commit_range):
+def parse_changed_files(repo, commit_range, config=None):
     output = git(["diff", "--numstat", "--name-status", commit_range], repo)
     files = {}
     for line in output.splitlines():
@@ -149,6 +255,9 @@ def parse_changed_files(repo, commit_range):
             status = parts[0]
             path = normalize(parts[-1])
             files.setdefault(path, changed_file(path, status))
+    if config:
+        for item in files.values():
+            apply_config_to_file(item, config)
     return sorted(files.values(), key=lambda x: x["path"])
 
 
@@ -176,7 +285,11 @@ def extract_symbols(repo, commit_range, max_symbols):
 
         kind = ""
         name = ""
-        if MACRO_RE.search(stripped):
+        if MEMORY_RE.search(stripped):
+            kind = "memory-lifetime"
+            ids = IDENT_RE.findall(stripped)
+            name = ids[0] if ids else "memory_change"
+        elif MACRO_RE.search(stripped):
             kind = "macro-or-conditional"
             match = re.match(r"^\s*#\s*(?:define|undef)\s+([A-Za-z_]\w*)", stripped)
             if match:
@@ -321,7 +434,7 @@ def rg_references(repo, symbol, limit):
     return paths
 
 
-def gather_references(repo, symbols, limit, codegraph):
+def gather_references(repo, symbols, limit, codegraph, config=None):
     results = []
     for symbol in symbols:
         backend = "none"
@@ -334,7 +447,7 @@ def gather_references(repo, symbols, limit, codegraph):
             if files:
                 backend = "rg"
                 codegraph["fallback_used_for_symbols"] += 1
-        results.append(reference_result(symbol["name"], backend, files))
+        results.append(reference_result(symbol["name"], backend, files, config))
     return results
 
 
@@ -344,9 +457,18 @@ def score_file(item):
     if item["is_header"]:
         score += 4
         reasons.append("header file changed")
-    if item["is_public_path"]:
+    if item.get("is_public_interface") or item["is_public_path"]:
         score += 3
-        reasons.append("public/shared path changed")
+        reasons.append("public/shared interface path changed")
+    if item.get("is_high_risk_path"):
+        score += 3
+        reasons.append("architecturally high-risk path changed")
+    if item.get("is_legacy_path"):
+        score += 3
+        reasons.append("legacy path changed")
+    if item.get("is_memory_sensitive_path"):
+        score += 2
+        reasons.append("memory-sensitive path changed")
     if item["is_build_file"]:
         score += 3
         reasons.append("build or feature switch file changed")
@@ -356,7 +478,7 @@ def score_file(item):
     return score, reasons
 
 
-def score_symbol(symbol, refs):
+def score_symbol(symbol, refs, config=None):
     score = 0
     reasons = []
     if symbol["kind"] == "function":
@@ -374,10 +496,28 @@ def score_symbol(symbol, refs):
     elif symbol["kind"] == "global":
         score += 2
         reasons.append("global data changed")
-    if PUBLIC_PATH_RE.search(symbol["file"]):
+    elif symbol["kind"] == "memory-lifetime":
+        score += 5
+        reasons.append("memory allocation/lifetime related change")
+    if SEMANTIC_RE.search(symbol.get("evidence", "")):
+        score += 2
+        reasons.append("semantic behavior keyword changed")
+    if config and path_matches_prefix(symbol["file"], config["memory_sensitive_paths"]):
+        score += 3
+        reasons.append("memory-sensitive path changed")
+    if PUBLIC_PATH_RE.search(symbol["file"]) or (config and path_matches_prefix(symbol["file"], config["public_interfaces"])):
         score += 3
         reasons.append("symbol is in public/shared path")
+    if config and path_matches_prefix(symbol["file"], config["high_risk_paths"]):
+        score += 3
+        reasons.append("symbol is in architecturally high-risk path")
     if refs:
+        legacy_file_count = refs.get("legacy_file_count", 0)
+        if config and not legacy_file_count:
+            legacy_file_count = len([path for path in refs.get("files", []) if path_matches_prefix(path, config["legacy_paths"])])
+        if legacy_file_count:
+            score += 4
+            reasons.append("referenced by {} legacy files".format(legacy_file_count))
         if refs["file_count"] >= 10:
             score += 3
             reasons.append("referenced by {} files".format(refs["file_count"]))
@@ -395,7 +535,7 @@ def level_for(score):
     return "low"
 
 
-def build_risk_items(files, symbols, refs):
+def build_risk_items(files, symbols, refs, config=None):
     risk_items = []
     refs_by_symbol = {r["symbol"]: r for r in refs}
     for item in files:
@@ -404,7 +544,7 @@ def build_risk_items(files, symbols, refs):
             risk_items.append(risk_item(item["path"], "file", score, reasons, [item["path"]]))
     for symbol in symbols:
         ref = refs_by_symbol.get(symbol["name"])
-        score, reasons = score_symbol(symbol, ref)
+        score, reasons = score_symbol(symbol, ref, config)
         evidence = [symbol["file"]]
         if ref:
             evidence.extend(ref["files"][:10])
@@ -420,16 +560,16 @@ def build_risk_items(files, symbols, refs):
     return sorted(risk_items, key=lambda x: (-x["score"], x["subject"]))
 
 
-def subsystem_impact(files, refs):
+def subsystem_impact(files, refs, config=None):
     counter = Counter()
     evidence = defaultdict(set)
     for item in files:
-        sub = subsystem_for(item["path"])
+        sub = item.get("subsystem") or (configured_subsystem_for(item["path"], config) if config else subsystem_for(item["path"]))
         counter[sub] += 1
         evidence[sub].add(item["path"])
     for ref in refs:
         for path in ref["files"]:
-            sub = subsystem_for(path)
+            sub = configured_subsystem_for(path, config) if config else subsystem_for(path)
             counter[sub] += 1
             evidence[sub].add(path)
     return {
@@ -440,11 +580,44 @@ def subsystem_impact(files, refs):
     }
 
 
+def build_impact_paths(refs, config):
+    paths = []
+    for ref in refs:
+        for file_path in ref.get("files", [])[:50]:
+            paths.append(
+                {
+                    "symbol": ref["symbol"],
+                    "backend": ref["backend"],
+                    "target_file": file_path,
+                    "subsystem": configured_subsystem_for(file_path, config),
+                    "is_legacy": path_matches_prefix(file_path, config["legacy_paths"]),
+                }
+            )
+    return paths
+
+
 def write_json(path, data):
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsystems):
+def manual_review_items(risks):
+    review = []
+    keywords = (
+        "header file changed",
+        "struct/union/enum/typedef changed",
+        "macro or conditional compilation changed",
+        "callback/function pointer pattern changed",
+        "memory allocation/lifetime related change",
+        "semantic behavior keyword changed",
+    )
+    for item in risks:
+        reasons = "; ".join(item["reasons"])
+        if item["level"] == "high" or any(keyword in reasons for keyword in keywords):
+            review.append({"subject": item["subject"], "kind": item["kind"], "level": item["level"], "reasons": item["reasons"]})
+    return review[:30]
+
+
+def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsystems, config, impact_paths):
     top_level = risks[0]["level"] if risks else "low"
     max_score = risks[0]["score"] if risks else 0
     backends = set(r["backend"] for r in refs if r["backend"] != "none")
@@ -463,6 +636,8 @@ def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsys
         "- Fallback used for symbols: {}".format(codegraph["fallback_used_for_symbols"]),
         "- Changed files: {}".format(len(files)),
         "- Changed symbols detected: {}".format(len(symbols)),
+        "- Public interface paths: {}".format(", ".join(config["public_interfaces"][:8])),
+        "- Legacy paths: {}".format(", ".join(config["legacy_paths"][:8])),
         "",
         "## High And Medium Risk Items",
         "",
@@ -496,6 +671,26 @@ def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsys
             )
         )
 
+    lines.extend(["", "## Impact Paths", ""])
+    if impact_paths:
+        for path in impact_paths[:30]:
+            legacy = "legacy" if path["is_legacy"] else "non-legacy"
+            lines.append(
+                "- `{}` -> `{}` -> `{}` ({})".format(
+                    path["symbol"], path["target_file"], path["subsystem"], legacy
+                )
+            )
+    else:
+        lines.append("- No symbol-to-file impact paths were found.")
+
+    review = manual_review_items(risks)
+    lines.extend(["", "## Must Review Manually", ""])
+    if review:
+        for item in review:
+            lines.append("- `{}` ({}, {}): {}".format(item["subject"], item["kind"], item["level"], "; ".join(item["reasons"])))
+    else:
+        lines.append("- No mandatory manual-review item was detected by deterministic rules.")
+
     lines.extend(
         [
             "",
@@ -503,6 +698,7 @@ def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsys
             "- Review high-risk public headers and shared modules listed above.",
             "- Run legacy tests for affected subsystem candidates.",
             "- Manually inspect struct layout, enum values, macros, callbacks, and function pointer tables.",
+            "- Run leak-focused checks for memory-lifetime changes, especially allocation/free and error paths.",
             "- For symbols with broad references, test at least one old feature path per affected subsystem.",
             "",
             "## Limitations",
@@ -546,6 +742,7 @@ def main():
 
     out = repo / args.out
     out.mkdir(parents=True, exist_ok=True)
+    config = load_scan_config(repo)
 
     codegraph = prepare_codegraph(repo, args.codegraph_mode, args.init_codegraph)
     if args.codegraph_mode == "required" and not codegraph["available"]:
@@ -553,20 +750,24 @@ def main():
         print("error: CodeGraph is required but codegraph executable was not found", file=sys.stderr)
         return 3
 
-    files = parse_changed_files(repo, args.range)
+    files = parse_changed_files(repo, args.range, config)
     symbols = extract_symbols(repo, args.range, args.max_symbols)
-    refs = gather_references(repo, symbols, args.max_refs, codegraph)
-    risks = build_risk_items(files, symbols, refs)
-    subsystems = subsystem_impact(files, refs)
+    refs = gather_references(repo, symbols, args.max_refs, codegraph, config)
+    risks = build_risk_items(files, symbols, refs, config)
+    subsystems = subsystem_impact(files, refs, config)
+    impact_paths = build_impact_paths(refs, config)
 
+    write_json(out / "scan_config.json", config)
     write_json(out / "codegraph_status.json", codegraph)
     write_json(out / "diff_summary.json", files)
     write_json(out / "changed_symbols.json", symbols)
     write_json(out / "references.json", refs)
+    write_json(out / "impact_paths.json", impact_paths)
     write_json(out / "risk_items.json", risks)
+    write_json(out / "manual_review.json", manual_review_items(risks))
     write_json(out / "subsystem_impact.json", subsystems)
     (out / "risk_report.md").write_text(
-        markdown_report(args.range, codegraph, files, symbols, refs, risks, subsystems),
+        markdown_report(args.range, codegraph, files, symbols, refs, risks, subsystems, config, impact_paths),
         encoding="utf-8",
     )
 

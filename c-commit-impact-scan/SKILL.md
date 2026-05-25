@@ -41,20 +41,52 @@ The target environment is a large commercial C codebase, usually intranet-only, 
 
 6. Read `.impact-scan/risk_report.md` first.
 7. If more evidence is needed, inspect these generated files:
+   - `.impact-scan/scan_config.json`
    - `.impact-scan/codegraph_status.json`
    - `.impact-scan/diff_summary.json`
    - `.impact-scan/changed_symbols.json`
+   - `.impact-scan/impact_paths.json`
    - `.impact-scan/references.json`
    - `.impact-scan/subsystem_impact.json`
    - `.impact-scan/risk_items.json`
+   - `.impact-scan/manual_review.json`
 8. Produce a concise report with:
    - overall risk: high, medium, or low
    - whether CodeGraph was used successfully
    - high-risk changed files and symbols
    - affected legacy subsystem candidates
    - evidence paths from changed item to references
+   - memory-lifetime and leak-risk findings
+   - mandatory manual-review items
    - suggested regression tests
    - scan limitations and confidence
+
+## Project Configuration
+
+For better legacy-impact results, add `.impact-scan.yml` at the target repository root. The parser is intentionally simple for Python 3.6 and offline Windows environments; use top-level list keys:
+
+```yaml
+public_interfaces:
+  - include/
+  - sdk/include/
+legacy_paths:
+  - legacy/
+  - product/stable/
+high_risk_paths:
+  - platform/
+  - protocol/
+  - storage/
+  - upgrade/
+memory_sensitive_paths:
+  - core/session/
+  - buffer/
+  - memory/
+low_risk_paths:
+  - tests/
+  - docs/
+```
+
+The scanner also accepts `.impact-scan.json` for stricter internal configuration. Prefer configuration over asking Claude Code to infer old-feature boundaries from directory names.
 
 ## Tool Priority
 
@@ -115,6 +147,11 @@ Use deterministic scoring before model reasoning. Treat these as default weights
 - `struct`, `union`, `enum`, or `typedef` changed: +4
 - macro or conditional compilation changed: +3
 - function pointer, callback, ops table, or vtable-like table changed: +4
+- memory allocation/lifetime related change: +5
+- memory-sensitive path change: +2 to +3
+- legacy reference from CodeGraph or `rg`: +4
+- configured high-risk path change: +3
+- semantic behavior keyword changed, such as return/error/NULL/size/lock: +2
 - global variable changed: +2
 - changed symbol referenced by 10 or more files: +3
 - changed symbol referenced across 3 or more top-level subsystems: +3
@@ -142,8 +179,24 @@ Always highlight these C risks when present:
 - macro default value changes
 - `#ifdef` / `#if` behavior changes
 - callback registration and function pointer table changes
+- allocation/free ownership changes and possible leak paths
+- `malloc`, `calloc`, `realloc`, `strdup`, `free`, `release`, `destroy`, `cleanup`, `refcount`, buffer size, and error-exit path changes
 - error code, return value, ownership, lifetime, or buffer size semantic changes
 - shared module changes used by legacy subsystems
+
+## Memory Leak Focus
+
+When the report flags `memory-lifetime`, do not treat it as a normal function change. Ask for or recommend leak-focused validation:
+
+- allocation success and failure paths
+- early `return` / `goto error` cleanup paths
+- ownership transfer between caller and callee
+- reference count increments and decrements
+- buffer resize and `realloc` error handling
+- callback cleanup and module unload paths
+- legacy paths that call the changed API repeatedly or in long-running sessions
+
+If no dynamic analysis is available in the intranet environment, recommend targeted stress loops and process memory monitoring for affected legacy features.
 
 ## Report Style
 

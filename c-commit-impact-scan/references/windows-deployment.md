@@ -70,3 +70,15 @@ For million-line repositories, keep result sizes bounded:
 - generated report directory: `.impact-scan`
 
 The scanner is designed to produce an actionable triage report, not a proof of behavioral compatibility.
+
+## Optional Repository Config
+
+Place `.impact-scan.yml` or `.impact-scan.json` in the C repository root to define:
+
+- public interface paths
+- legacy feature paths
+- architecture high-risk paths
+- memory-sensitive paths
+- low-risk paths
+
+This makes Claude Code less dependent on inference and improves old-feature impact detection.
