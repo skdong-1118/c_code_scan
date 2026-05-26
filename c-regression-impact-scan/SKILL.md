@@ -56,6 +56,7 @@ The target environment is a large commercial C codebase, usually intranet-only, 
 9. Produce a final Chinese Markdown detection report. Use `.impact-scan/risk_report.md` as the base report, refine it if needed, and ensure the final answer points to the generated `.md` file. The Markdown report must include:
    - overall risk: high, medium, or low
    - whether CodeGraph was used successfully
+   - the three analysis layers: CodeGraph, Heuristic, and Manual Review
    - high-risk changed files and symbols
    - affected legacy subsystem candidates, with per-subsystem impact reason, changed files, referenced files, changed symbols, risk categories, and suggested checks
    - evidence paths from changed item to references
@@ -159,6 +160,50 @@ If CodeGraph is missing, tell the user clearly and either:
 
 For weak local models, rely on `.impact-scan/risk_items.json` and `.impact-scan/risk_report.md` more than free-form code reading.
 
+## Three-Layer Analysis Model
+
+The report must clearly separate these three layers. Do not let Claude Code present heuristic evidence as a formal proof.
+
+### CodeGraph 层
+
+Use CodeGraph to find:
+
+- function/symbol reference
+- callers and callees
+- include/import relationships
+- subsystem spread
+- changed symbol to referenced file impact paths
+
+CodeGraph gives impact evidence. It does not prove C behavior is safe, especially when macro expansion, conditional compilation, function pointers, callbacks, platform-specific build flags, or generated code are involved.
+
+### Heuristic 层
+
+Use deterministic rules to identify risk signals from:
+
+- variable names and function names
+- file paths and subsystem paths
+- git diff content
+- changed public headers
+- changed macros, structs, callbacks, globals, memory-lifetime code
+- architecture risk categories and scores
+
+Heuristic analysis is only `risk triage`. It can say "this should be reviewed" or "this is likely high risk"; it must not say "this is safe" unless stronger evidence exists.
+
+### Manual Review 层
+
+When static evidence is incomplete, write the item into the Markdown report under `必须人工 Review` and ask engineers to manually inspect it. This layer is mandatory for C risks that ordinary symbol/reference graphs cannot reliably resolve:
+
+- same address used through different variable names
+- pointer alias and ownership transfer
+- struct field passing, such as `ctx->buf` becoming `arg` or callback data
+- callback, async flow, queue, timer, thread, or interrupt lifetime
+- allocation/free balance and error cleanup paths
+- `realloc` failure handling and buffer resize ownership
+- refcount increment/decrement balance
+- macro or platform-specific compile path differences
+
+For each Manual Review item, include the subject, kind, level, reasons, evidence files when available, and what the engineer should verify. The purpose is to reduce manual review scope, not to replace the architect's judgment.
+
 ## Risk Rules
 
 Use deterministic scoring before model reasoning. Treat these as default weights:
@@ -261,6 +306,7 @@ The output report must be Chinese Markdown, but technical terms should stay in E
 Keep these sections unless there is a strong reason to add more:
 
 - `概要`
+- `分析分层`
 - `高/中风险项`
 - `架构风险类别`
 - `受影响 subsystem 候选`

@@ -138,6 +138,29 @@ class CImpactScanTests(unittest.TestCase):
         self.assertTrue(any("public interface" in reason for reason in analysis[0]["why_impacted"]))
         self.assertTrue(any("legacy tests" in check for check in analysis[0]["suggested_checks"]))
 
+    def test_markdown_report_documents_three_analysis_layers(self):
+        config = scan.default_scan_config("subsys/net")
+        codegraph = scan.codegraph_status("prefer")
+        report = scan.markdown_report(
+            "HEAD~1..HEAD",
+            codegraph,
+            [],
+            [],
+            [],
+            [],
+            {"subsystems": []},
+            config,
+            [],
+            [],
+            [],
+        )
+
+        self.assertIn("## 分析分层", report)
+        self.assertIn("CodeGraph 层", report)
+        self.assertIn("Heuristic 层", report)
+        self.assertIn("Manual Review 层", report)
+        self.assertIn("人工排查", report)
+
     def test_detects_architecture_risk_categories_from_c_evidence(self):
         cases = {
             "memory_safety": "memcpy(dst, src, len + 1);",

@@ -243,6 +243,7 @@ subsys/net/include/
 生成的检测报告通常包含：
 
 - `Summary`
+- `Analysis Layers`
 - `High And Medium Risk Items`
 - `Architecture Risk Categories`
 - `Affected Subsystem Candidates`
@@ -254,6 +255,12 @@ subsys/net/include/
 - `Limitations`
 
 报告语言风格为中文描述为主，但专业术语保留英文，例如 `changed symbols`、`subsystem`、`legacy path`、`memory-lifetime`、`ABI`、`callback`、`dispatch table`、`compile database`、`CodeGraph`。这样便于工程团队阅读，也避免强行翻译造成歧义。
+
+报告会明确区分三层分析：
+
+- `CodeGraph 层`：查找 function/symbol reference、callers/callees、include/import 关系和 subsystem 影响面，提供 impact evidence。
+- `Heuristic 层`：根据变量名、函数名、路径、diff 内容、risk category 和 deterministic scoring 识别风险信号，只作为 risk triage。
+- `Manual Review 层`：对同一地址不同变量名、pointer alias、ownership transfer、callback/async flow、struct field 传递、error cleanup path 等工具难以证明的问题，输出到报告里的 `必须人工 Review`，让工程师按清单人工排查。
 
 其中 `Affected Subsystem Candidates` 不只列出命中数量，还会按 subsystem 展开：
 
