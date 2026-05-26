@@ -3,88 +3,246 @@ name: c-regression-impact-scan
 description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, memory safety, ABI/layout, concurrency, error handling, ownership/lifetime, macro/config behavior, protocol compatibility, state timing, callback dispatch, performance/resource usage, security boundaries, build/deploy behavior, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic architecture risk rules. The final deliverable must be a Chinese Markdown detection report.
 ---
 
-# C Regression Impact Scan
+# Guided C Regression Impact Scan
 
 ## Purpose
 
 Use this skill in Claude Code to answer: "Did the latest C change introduce architecture-level regression risk for existing subsystem behavior?"
 
-The target environment is a large commercial C codebase, usually intranet-only, often on Windows, and possibly handled by a weak AI agent. Do not ask the model to read the whole repository. Use local tools and deterministic rules first, then summarize the structured output.
+This is a **guided workflow skill** — the agent collects user focus, runs deterministic tools for evidence, applies fixed risk rules, and generates a template-based report. It does NOT ask the model to read the entire repository or independently judge "is this safe."
 
-## Default Workflow
+## Core Principle
 
-1. Confirm the current directory is the target git repository.
-2. Confirm `codegraph` or `codegraph.exe` is installed. CodeGraph is the primary backend for this skill.
-3. Choose the subsystem directory to scan, such as `subsys/net` or `product/http`.
-4. Run the bundled scanner from the repository root with `--subsystem`:
+```
+用户给重点 → 工具产证据 → 规则做评分 → 模板写报告 → 模型少推理
+```
 
-   ```powershell
-   python path\to\c-regression-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
-   ```
+The model orchestrates the steps. The Python scanner produces evidence. Deterministic rules produce scores. A template produces the final report. The model only summarizes and confirms.
 
-   On macOS or Linux:
+## Two Modes
 
-   ```bash
-   python3 path/to/c-regression-impact-scan/scripts/c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode prefer
-   ```
+### Default: Guided Mode (multi-step)
 
-5. For first-time setup, if the user has approved indexing or the repository policy allows it, add `--init-codegraph`:
+Best for interactive use with a local agent. The agent walks through each step with user confirmation at key checkpoints:
 
-   ```powershell
-   python path\to\c-regression-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer --init-codegraph
-   ```
+```
+Step 0: Focus intake  → 用户提供重点
+Step 1: Scope discovery → 发现扫描范围 → 用户确认
+Step 2: Risk triage → 初步风险分诊
+Step 3: Focused expansion → 定向扩展影响面
+Step 4: Evidence review → 用户确认关键证据
+Step 5: Final report → 生成最终报告
+```
 
-6. If the scan must fail when CodeGraph is unavailable, use:
+### Alternative: One-shot Mode
 
-   ```powershell
-   python path\to\c-regression-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode required
-   ```
+Best for CI or when the user says "直接生成报告":
 
-7. Read `.impact-scan/risk_report.md` first.
-8. If more evidence is needed, inspect these generated files:
-   - `.impact-scan/scan_config.json`
-   - `.impact-scan/codegraph_status.json`
-   - `.impact-scan/diff_summary.json`
-   - `.impact-scan/changed_symbols.json`
-   - `.impact-scan/impact_paths.json`
-   - `.impact-scan/references.json`
-   - `.impact-scan/subsystem_impact.json`
-   - `.impact-scan/subsystem_analysis.json`
-   - `.impact-scan/risk_items.json`
-   - `.impact-scan/architecture_risk_summary.json`
-   - `.impact-scan/manual_review.json`
-9. Produce a final Chinese Markdown detection report. Use `.impact-scan/risk_report.md` as the base report, refine it if needed, and ensure the final answer points to the generated `.md` file. The Markdown report must include:
-   - overall risk: high, medium, or low
-   - whether CodeGraph was used successfully
-   - the three analysis layers: CodeGraph, Heuristic, and Manual Review
-   - high-risk changed files and symbols
-   - affected legacy subsystem candidates, with per-subsystem impact reason, changed files, referenced files, changed symbols, risk categories, and suggested checks
-   - evidence paths from changed item to references
-   - memory-lifetime and leak-risk findings
-   - architecture risk categories
-   - mandatory manual-review items
-   - suggested regression tests
-   - scan limitations and confidence
+```bash
+python3 c-regression-impact-scan/scripts/c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys/net
+```
 
-The final deliverable is not just a chat summary. It must be a Chinese Markdown report file, normally `.impact-scan/risk_report.md`.
+This runs all steps at once and outputs `.impact-scan/risk_report.md`.
 
-Encoding requirements:
+## Guided Workflow
 
-- The Chinese Markdown report must be written as UTF-8 with BOM to reduce garbled text in Windows viewers.
-- JSON artifacts remain standard UTF-8.
-- Subprocess output from Git, CodeGraph, and rg must be decoded as UTF-8 first with tolerant fallback, avoiding Windows GBK `UnicodeDecodeError` failures.
+### Step 0: Focus Intake (用户提供重点)
+
+Before scanning, ask the user what they care about. Guide them to provide a focus config. This reduces guesswork for weak models.
+
+The user can provide focus via:
+
+**Option A: Focus config file** (`.impact-scan-focus.yml` in repo root):
+
+```yaml
+subsystem: subsys/net
+focus_symbols:
+  - api_open
+  - session_alloc
+focus_risks:
+  - memory_leak
+  - abi_layout
+  - protocol_compatibility
+ignore_paths:
+  - tests/
+  - docs/
+legacy_paths:
+  - legacy/
+  - stable/
+public_interfaces:
+  - include/
+notes:
+  - 老客户端 open/close 行为不能变
+  - session 重复创建销毁不能泄漏
+```
+
+**Option B: CLI flags** (quick, no file needed):
+
+```
+--focus-symbols api_open,session_alloc
+--focus-risks memory_leak,abi_layout
+--ignore-paths tests/,docs/
+```
+
+If the user hasn't provided focus, ask:
+
+> 请告诉我你最关心什么：
+> - 哪些 subsystem 需要重点检查？
+> - 哪些 symbol 不能出问题？
+> - 哪些风险类别最关注（memory_leak / abi_layout / protocol_compatibility / ...）？
+> - 哪些路径可以忽略（tests/ / docs/）？
+> - 有什么项目特殊背景需要我知道？
+
+The scanner will read focus from `.impact-scan-focus.yml` automatically. CLI flags override file config.
+
+### Step 1: Scope Discovery (发现扫描范围)
+
+Run the scanner to discover what changed:
+
+```bash
+python3 c-regression-impact-scan/scripts/c_impact_scan.py \
+  --step discover --range HEAD~1..HEAD --subsystem subsys/net
+```
+
+This outputs `.impact-scan/scope_discovery.json`:
+
+- changed files (C files, headers, build files, public interfaces)
+- inferred subsystems
+
+Present the summary to the user for confirmation:
+
+> 本次变更涉及以下内容：
+> - Changed files: 5
+> - C/header files: 3
+> - Public interface files: include/api.h
+> - Inferred subsystems: subsys/net
+>
+> 是否按 subsys/net 扫描？有没有需要调整的子系统范围？
+
+### Step 2: Risk Triage (初步风险分诊)
+
+Run quick triage WITHOUT reference search. This only scores changed files/symbols using deterministic rules:
+
+```bash
+python3 c-regression-impact-scan/scripts/c_impact_scan.py \
+  --step triage --range HEAD~1..HEAD --subsystem subsys/net
+```
+
+This outputs `.impact-scan/triage_summary.json`:
+
+- high / medium / low risk counts
+- focus symbol coverage (which found, which missing)
+- expansion candidates (what would be expanded in Step 3)
+
+Important: Step 2 does NOT search for references across the codebase. It only identifies risk signals in the diff itself. This keeps it fast.
+
+### Step 3: Focused Expansion (定向扩展影响面)
+
+Only expand references for:
+
+- user-specified `focus_symbols`
+- high-risk symbols (score >= 8)
+- public interface symbols
+- memory-lifetime symbols
+
+Do NOT expand all changed symbols. This keeps reference search focused and fast:
+
+```bash
+python3 c-regression-impact-scan/scripts/c_impact_scan.py \
+  --step expand --range HEAD~1..HEAD --subsystem subsys/net
+```
+
+This outputs `.impact-scan/expansion_summary.json`:
+
+- which symbols were expanded and why
+- reference counts per expanded symbol
+- CodeGraph vs fallback hits
+
+Tool strategy (internal, don't expose to user unless asked):
+
+```
+CodeGraph → rg fallback → heuristic only
+```
+
+If CodeGraph or rg fails, confidence is lowered — the report will state this explicitly. Don't fabricate impact paths.
+
+### Step 4: Evidence Review (用户确认关键证据)
+
+Before generating the final report, present key findings for user confirmation:
+
+- Are the legacy paths correct?
+- Are the public interfaces correct?
+- Are the ignore paths correct?
+- Do the impact paths match project reality?
+- Which risk items should be emphasized in the report?
+
+This step is critical for weak models — project knowledge lives with the user, not the agent.
+
+### Step 5: Final Report (生成最终报告)
+
+Generate the Chinese Markdown report from all collected artifacts:
+
+```bash
+python3 c-regression-impact-scan/scripts/c_impact_scan.py \
+  --step report --range HEAD~1..HEAD --subsystem subsys/net
+```
+
+This reads all `.impact-scan/*.json` artifacts and generates `.impact-scan/risk_report.md`.
+
+The report includes:
+
+- **概要**: overall risk, max score, confidence, CodeGraph status
+- **用户重点关注覆盖**: which focus symbols found, which risks detected
+- **分析分层**: CodeGraph / Heuristic / Manual Review
+- **高/中风险项**: table of high and medium risk items
+- **架构风险类别**: aggregated by category
+- **受影响 subsystem 候选**: per-subsystem impact reasons, files, symbols, checks
+- **Reference Evidence**: CodeGraph/rg reference counts
+- **Impact Paths**: symbol → file → subsystem chains
+- **必须人工 Review**: mandatory manual review items
+- **内存泄漏关注点**: memory-lifetime specific findings
+- **建议回归检查**: suggested regression tests
+- **局限性**: scan limitations and confidence caveats
+
+The report is written as UTF-8 with BOM for Windows compatibility.
+
+## Focus Config Reference
+
+### File: `.impact-scan-focus.yml`
+
+```yaml
+subsystem: subsys/net
+focus_symbols:
+  - api_open
+  - session_alloc
+focus_risks:
+  - memory_leak
+  - abi_layout
+ignore_paths:
+  - tests/
+  - docs/
+legacy_paths:
+  - legacy/
+public_interfaces:
+  - include/
+notes:
+  - 老客户端 open/close 行为不能变
+```
+
+### CLI flags
+
+| Flag | Example |
+|------|---------|
+| `--focus-symbols` | `api_open,session_alloc` |
+| `--focus-risks` | `memory_leak,abi_layout` |
+| `--ignore-paths` | `tests/,docs/` |
+| `--focus` | path to `.impact-scan-focus.yml` |
+
+CLI flags override file config.
 
 ## Subsystem Configuration
 
-For better legacy-impact results, add `.impact-scan.yml` inside the subsystem directory, not the repository root. The parser is intentionally simple for Python 3.6 and offline Windows environments; use top-level list keys:
-
-```text
-repo/
-  subsys/net/
-    .impact-scan.yml
-    include/
-    legacy/
-```
+Place `.impact-scan.yml` or `.impact-scan.json` inside each subsystem directory:
 
 ```yaml
 public_interfaces:
@@ -92,246 +250,158 @@ public_interfaces:
   - sdk/include/
 legacy_paths:
   - legacy/
-  - product/stable/
+  - stable/
 high_risk_paths:
   - platform/
   - protocol/
   - storage/
-  - upgrade/
 memory_sensitive_paths:
   - core/session/
   - buffer/
-  - memory/
 low_risk_paths:
   - tests/
   - docs/
 ```
 
-Paths in the subsystem config are relative to the subsystem directory. With `--subsystem subsys/net`, `include/` becomes `subsys/net/include/` internally.
+## Risk Rules (Deterministic Scoring)
 
-The scanner also accepts `.impact-scan.json` inside the subsystem directory for stricter internal configuration. Prefer subsystem configuration over asking Claude Code to infer old-feature boundaries from the whole repository.
+### File-level weights
 
-## Tool Priority
+- changed public `.h` file: +4
+- changed path matching `include/common/public/api/lib/platform/protocol/sdk/adapter`: +3
+- configured high-risk path: +3
+- configured legacy path: +3
+- configured memory-sensitive path: +2
+- build/feature file changed: +3
+- large change (>= 80 lines): +2
 
-Prefer tools in this order. Do not skip CodeGraph if it is installed.
+### Symbol-level weights
 
-1. `codegraph` or `codegraph.exe`.
-2. `rg` or `rg.exe`.
-3. Universal Ctags, if available.
-4. Python fallback rules in the bundled scanner.
+- function declaration/definition changed: +4
+- struct/union/enum/typedef changed: +4
+- macro or conditional compilation changed: +3
+- callback/function pointer pattern changed: +4
+- global data changed: +2
+- memory allocation/lifetime change: +5
+- container ownership change (list/tree/hash/queue/map/cache): +5
+- semantic behavior keyword changed: +2
+- symbol in public/shared path: +3
+- symbol in high-risk path: +3
+- symbol in memory-sensitive path: +3
+- legacy file reference: +4
+- referenced by >= 10 files: +3
+- spans >= 3 subsystems: +3
 
-Do not require Linux-only tools such as `bash`, `sed`, `awk`, `xargs`, `find`, or `cscope` in the Windows baseline. If Git Bash or WSL exists, it may be used as an optional enhancement only.
+### Architecture risk category weights
 
-## CodeGraph Use
+| Category | Weight |
+|----------|--------|
+| `memory_safety` | +5 |
+| `memory_leak` | +5 |
+| `abi_layout` | +5 |
+| `security_boundary` | +5 |
+| `concurrency` | +4 |
+| `ownership_lifetime` | +4 |
+| `protocol_compatibility` | +4 |
+| `state_machine_timing` | +4 |
+| `callback_dispatch` | +4 |
+| `error_handling` | +3 |
+| `macro_config` | +3 |
+| `performance_resource` | +3 |
+| `build_deploy` | +3 |
 
-If `codegraph` is available, use it before `rg`. Treat it as the primary impact query backend, not as the final decision maker.
+### Risk levels
 
-Useful commands vary by installed version. Try non-destructive help first:
+- **high**: score >= 8
+- **medium**: score 4–7
+- **low**: score 0–3
 
-```powershell
-codegraph --help
-codegraph impact --help
-```
+Scoring is triage only — not proof of defect. High score means "review this," not "this is broken."
 
-If `.codegraph` does not exist, ask before running expensive indexing on very large repositories unless the user already requested a scan or repository policy allows indexing. In automated CI, indexing may be allowed by configuration.
-
-CodeGraph is useful for:
-
-- changed function impact
-- callers and callees
-- include/import relationships
-- subsystem spread
-
-Do not claim CodeGraph proves a change is safe. In C code, macro expansion, conditional compilation, function pointers, callbacks, and platform-specific build flags can hide impact.
-
-## Claude Code Guidance
-
-Claude Code should keep the interaction simple:
-
-1. Run the scanner.
-2. Read the generated Markdown and JSON artifacts.
-3. Ensure `.impact-scan/risk_report.md` exists and is the final Chinese Markdown detection report.
-4. Avoid opening broad repository files unless a specific risk item needs evidence.
-
-If CodeGraph is missing, tell the user clearly and either:
-
-- stop, when `--codegraph-mode required` was requested
-- continue with lower confidence, when `--codegraph-mode prefer` was used
-
-For weak local models, rely on `.impact-scan/risk_items.json` and `.impact-scan/risk_report.md` more than free-form code reading.
-
-## Three-Layer Analysis Model
-
-The report must clearly separate these three layers. Do not let Claude Code present heuristic evidence as a formal proof.
+## Three-Layer Analysis
 
 ### CodeGraph 层
 
-Use CodeGraph to find:
-
-- function/symbol reference
-- callers and callees
-- include/import relationships
-- subsystem spread
-- changed symbol to referenced file impact paths
-
-CodeGraph gives impact evidence. It does not prove C behavior is safe, especially when macro expansion, conditional compilation, function pointers, callbacks, platform-specific build flags, or generated code are involved.
+Query function/symbol references, callers/callees, include/import relationships, and subsystem spread. Provides impact evidence. Does NOT prove safety — macro expansion, conditional compilation, function pointers, and callbacks can hide impact.
 
 ### Heuristic 层
 
-Use deterministic rules to identify risk signals from:
-
-- variable names and function names
-- file paths and subsystem paths
-- git diff content
-- changed public headers
-- changed macros, structs, callbacks, globals, memory-lifetime code
-- architecture risk categories and scores
-
-Heuristic analysis is only `risk triage`. It can say "this should be reviewed" or "this is likely high risk"; it must not say "this is safe" unless stronger evidence exists.
+Deterministic rules identify risk signals from names, paths, diff content, and categories. This is risk triage only. It can say "review this" but NOT "this is safe."
 
 ### Manual Review 层
 
-When static evidence is incomplete, write the item into the Markdown report under `必须人工 Review` and ask engineers to manually inspect it. This layer is mandatory for C risks that ordinary symbol/reference graphs cannot reliably resolve:
+For risks that static tools cannot resolve — pointer aliasing, ownership transfer, callback/async flow, struct field passing, error cleanup paths — write items into `必须人工 Review`. This reduces manual review scope, not replaces architect judgment.
 
-- same address used through different variable names
-- pointer alias and ownership transfer
-- struct field passing, such as `ctx->buf` becoming `arg` or callback data
-- callback, async flow, queue, timer, thread, or interrupt lifetime
-- allocation/free balance and error cleanup paths
-- `realloc` failure handling and buffer resize ownership
+## Architecture Risk Categories
+
+| Category | Detects |
+|----------|---------|
+| `memory_safety` | buffer overflow, OOB, UAF, double free, unsafe copy/format |
+| `memory_leak` | alloc/free imbalance, missing cleanup, refcount imbalance, container ops |
+| `abi_layout` | struct/union/enum/typedef layout, packing, alignment, exported symbols |
+| `concurrency` | lock/unlock asymmetry, race, atomic/refcount, thread/timer/interrupt |
+| `error_handling` | return value, error code, goto error, NULL check, cleanup path |
+| `ownership_lifetime` | ownership transfer, init/destroy order, retain/release, container insert/remove |
+| `macro_config` | macro default, feature flag, platform conditional, build-time behavior |
+| `protocol_compatibility` | wire format, version, endian, opcode, field meaning, persistent data |
+| `state_machine_timing` | state transition, event order, timer, timeout, retry, start/stop |
+| `callback_dispatch` | function pointer table, ops table, handler registration, dispatch |
+| `performance_resource` | CPU, memory peak, file/socket/thread/timer, loop, lock contention |
+| `security_boundary` | auth, permission, input validation, path/command injection, overflow |
+| `build_deploy` | Makefile/CMake, link flags, exported symbols, install/deploy behavior |
+
+## Memory Leak Focus
+
+When report flags `memory-lifetime`, do not treat it as a normal function change. Require or suggest memory-leak-specific verification:
+
+- allocation success and failure paths
+- early return / goto error cleanup paths
+- ownership transfer between caller and callee
 - refcount increment/decrement balance
-- macro or platform-specific compile path differences
-
-For each Manual Review item, include the subject, kind, level, reasons, evidence files when available, and what the engineer should verify. The purpose is to reduce manual review scope, not to replace the architect's judgment.
-
-## Risk Rules
-
-Use deterministic scoring before model reasoning. Treat these as default weights:
-
-- changed public `.h` file: +4
-- changed path containing `include`, `common`, `public`, `api`, `lib`, `platform`, `protocol`, `sdk`, or `adapter`: +3
-- function signature or declaration changed: +4
-- `struct`, `union`, `enum`, or `typedef` changed: +4
-- macro or conditional compilation changed: +3
-- function pointer, callback, ops table, or vtable-like table changed: +4
-- memory allocation/lifetime related change: +5
-- memory-sensitive path change: +2 to +3
-- legacy reference from CodeGraph or `rg`: +4
-- configured high-risk path change: +3
-- semantic behavior keyword changed, such as return/error/NULL/size/lock: +2
-- global variable changed: +2
-- changed symbol referenced by 10 or more files: +3
-- changed symbol referenced across 3 or more top-level subsystems: +3
-- build file or feature switch changed: +3
-
-Architecture risk category weights:
-
-- `memory_safety`: +5
-- `memory_leak`: +5
-- `abi_layout`: +5
-- `concurrency`: +4
-- `error_handling`: +3
-- `ownership_lifetime`: +4
-- `macro_config`: +3
-- `protocol_compatibility`: +4
-- `state_machine_timing`: +4
-- `callback_dispatch`: +4
-- `performance_resource`: +3
-- `security_boundary`: +5
-- `build_deploy`: +3
-
-Risk level:
-
-- `high`: score >= 8, or any public header/API change with broad references
-- `medium`: score 4-7
-- `low`: score 0-3 and narrow local references
-
-Confidence:
-
-- `high`: CodeGraph or strong index exists and references were found
-- `medium`: `rg` references and file-level evidence exist
-- `low`: only diff heuristics were available, or generated references are sparse
-
-## C-Specific Review Focus
-
-发现以下 C 风险时必须在报告中突出说明：
-
-- 公共头文件变化
-- 结构体布局变化，包括字段顺序和字段类型变化
-- 枚举值变化
-- 宏默认值变化
-- `#ifdef` / `#if` 行为变化
-- 回调注册和函数指针表变化
-- 分配/释放所有权变化以及潜在泄漏路径
-- `malloc`, `calloc`, `realloc`, `strdup`, `free`, `release`, `destroy`, `cleanup`, `refcount`, buffer size, and error-exit path changes
-- 错误码、返回值、所有权、生命周期或 buffer size 语义变化
-- 老功能子系统使用的共享模块变化
-
-## 架构风险类别
-
-检测到以下类别时，必须写入中文 Markdown 报告：
-
-- `memory_safety`: buffer overflow, out-of-bounds, use-after-free, double free, uninitialized memory, unsafe copy/format operations
-- `memory_leak`: allocation/free imbalance, missing cleanup, refcount imbalance, `realloc` failure handling
-- `abi_layout`: struct/union/enum/typedef layout, packing, alignment, exported symbol, or binary interface change
-- `concurrency`: lock/unlock asymmetry, race condition, atomic/refcount behavior, thread/timer/interrupt interaction
-- `error_handling`: changed return value, error code, `goto error`, `NULL` handling, cleanup path
-- `ownership_lifetime`: ownership transfer, init/destroy order, retain/release, object lifetime across callbacks
-- `macro_config`: macro default, feature flag, platform conditional, build-time behavior
-- `protocol_compatibility`: wire format, version, endian, opcode, field meaning, persistent data compatibility
-- `state_machine_timing`: state transition, event order, timer, timeout, retry, start/stop sequence
-- `callback_dispatch`: function pointer table, ops table, handler registration, dispatch table
-- `performance_resource`: CPU, memory peak, file/socket/thread/timer resources, loop complexity, lock contention
-- `security_boundary`: auth, permission, input validation, path/command injection, integer or buffer overflow
-- `build_deploy`: Makefile/CMake/link flags, exported symbols, install/deploy behavior, default build options
-
-## 内存泄漏关注点
-
-当报告标记 `memory-lifetime` 时，不要把它当成普通函数变化处理。需要要求或建议进行内存泄漏专项验证：
-
-- 内存分配成功和失败路径
-- 提前 `return` / `goto error` 清理路径
-- 调用者和被调用者之间的所有权转移
-- 引用计数递增和递减是否平衡
-- buffer resize 和 `realloc` 错误处理
-- 插入链表、树、hash、queue、map、cache 等容器后的 ownership 是否转移
-- 容器插入失败、重复插入、异常返回时是否摘除或释放
-- `list_add`, `list_del`, `rb_insert`, `rb_erase`, `hash_add`, `hash_del`, `queue_push`, `queue_remove`, `map_put`, `cache_insert` 等数据结构操作
-- callback 清理和模块卸载路径
-- 重复调用或长时间运行的老功能路径
-
-如果内网环境没有动态分析工具，建议对受影响老功能做定向压力循环和进程内存监控。
+- buffer resize and realloc error handling
+- container insert/remove ownership transfer (list_add, rb_insert, hash_add, queue_push, map_put, cache_insert, etc.)
+- callback cleanup and module unload paths
+- repeated-call or long-running legacy paths
 
 ## Report Style
 
-The output report must be Chinese Markdown, but technical terms should stay in English when that is clearer. Prefer mixed wording such as `changed symbols`, `subsystem`, `legacy path`, `memory-lifetime`, `ABI`, `callback`, `dispatch table`, `compile database`, and `CodeGraph`.
+Chinese Markdown, technical terms in English when clearer. Sections:
 
-Keep these sections unless there is a strong reason to add more:
+- 概要
+- 用户重点关注覆盖
+- 分析分层
+- 高/中风险项
+- 架构风险类别
+- 受影响 subsystem 候选
+- Reference Evidence
+- Impact Paths
+- 必须人工 Review
+- 内存泄漏关注点
+- 建议回归检查
+- 局限性
 
-- `概要`
-- `分析分层`
-- `高/中风险项`
-- `架构风险类别`
-- `受影响 subsystem 候选`
-- `Reference Evidence`
-- `Impact Paths`
-- `必须人工 Review`
-- `内存泄漏关注点`
-- `建议回归检查`
-- `局限性`
+Use evidence-backed language. When confidence is low, state why:
 
-Use evidence-backed language. Prefer:
+> Confidence is medium because no compile database or semantic C index was available.
 
-> "This commit is high risk because `include/foo.h` changed and references were found in 7 subsystems."
+## Agent Guidance
 
-Avoid:
+1. Collect user focus first (Step 0) — don't skip this.
+2. Run `--step discover` and confirm scope with user.
+3. Run `--step triage` for quick risk scoring.
+4. Run `--step expand` for focused reference search.
+5. Present key evidence for user confirmation (Step 4).
+6. Run `--step report` to generate the final Markdown.
+7. Read `.impact-scan/risk_report.md` and summarize for the user.
 
-> "This is safe."
+If CodeGraph is missing, tell the user and either stop (`--codegraph-mode required`) or continue with lower confidence (`--codegraph-mode prefer`).
 
-When evidence is incomplete, say exactly why:
-
-> "Confidence is medium because no compile database or semantic C index was available; macro-expanded paths were not verified."
+For weak local models, rely on `.impact-scan/risk_items.json` and `.impact-scan/subsystem_analysis.json` more than free-form code reading. The scanner produces structured evidence — use it.
 
 ## Windows Intranet Notes
 
-Read `references/windows-deployment.md` when setting up the skill on Windows or packaging it for an offline server.
+- Python 3.6+ compatible
+- No dependency on sed/awk/xargs/find/bash
+- `risk_report.md` written as UTF-8 with BOM
+- Subprocess output decoded UTF-8 first with tolerant GBK fallback
+- Prefer `codegraph.exe` on Windows, fall back to `rg.exe`

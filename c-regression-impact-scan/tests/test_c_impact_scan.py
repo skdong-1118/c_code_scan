@@ -1,5 +1,6 @@
 import importlib.util
 import codecs
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -232,6 +233,187 @@ class CImpactScanTests(unittest.TestCase):
             raw = path.read_bytes()
         self.assertTrue(raw.startswith(codecs.BOM_UTF8))
         self.assertEqual("# 中文报告\n", raw.decode("utf-8-sig"))
+
+
+    def test_focus_config_loaded_from_yaml_file(self):
+        config = scan.default_scan_config("subsys/net")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".impact-scan-focus.yml").write_text(
+                "\n".join([
+                    "subsystem: subsys/net",
+                    "focus_symbols:",
+                    "  - api_open",
+                    "  - session_alloc",
+                    "focus_risks:",
+                    "  - memory_leak",
+                    "  - abi_layout",
+                    "ignore_paths:",
+                    "  - tests/",
+                    "  - docs/",
+                    "notes:",
+                    "  - old client must not change",
+                ]),
+                encoding="utf-8",
+            )
+            focus = scan.load_focus_config(repo)
+
+        self.assertIn("api_open", focus["focus_symbols"])
+        self.assertIn("session_alloc", focus["focus_symbols"])
+        self.assertIn("memory_leak", focus["focus_risks"])
+        self.assertIn("abi_layout", focus["focus_risks"])
+        self.assertIn("tests/", focus["ignore_paths"])
+        self.assertIn("subsys/net", focus["scope_override"])
+        self.assertTrue(any("old client" in n for n in focus["notes"]))
+
+    def test_focus_cli_flags_override_file_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            focus = scan.load_focus_config(
+                repo,
+                cli_focus_symbols="my_func,other_func",
+                cli_focus_risks="concurrency",
+                cli_ignore_paths="vendor/,third_party/",
+            )
+
+        self.assertEqual(["my_func", "other_func"], focus["focus_symbols"])
+        self.assertEqual(["concurrency"], focus["focus_risks"])
+        self.assertEqual(["vendor/", "third_party/"], focus["ignore_paths"])
+
+    def test_select_symbols_for_expansion_picks_focus_high_risk_and_memory(self):
+        symbols = [
+            scan.changed_symbol("api_open", "include/api.h", "function", "int api_open(void);"),
+            scan.changed_symbol("helper", "src/helper.c", "function", "void helper(void);"),
+            scan.changed_symbol("session_alloc", "core/session.c", "memory-lifetime", "ctx = malloc(sizeof(*ctx));"),
+        ]
+        risks = [
+            scan.risk_item("api_open", "function", 12, ["public/shared interface path changed"], ["include/api.h"]),
+            scan.risk_item("helper", "function", 2, ["small change"], ["src/helper.c"]),
+            scan.risk_item("session_alloc", "memory-lifetime", 10, ["memory allocation/lifetime related change"], ["core/session.c"]),
+        ]
+        focus = {"focus_symbols": ["api_open"], "focus_risks": [], "ignore_paths": [], "notes": []}
+
+        selected, reasons = scan.select_symbols_for_expansion(symbols, risks, focus)
+
+        self.assertIn("api_open", selected)
+        self.assertIn("session_alloc", selected)
+        self.assertNotIn("helper", selected)
+        self.assertIn("user-specified focus symbol", reasons["api_open"])
+        self.assertIn("memory-lifetime", reasons["session_alloc"])
+
+    def test_ignore_paths_filter_removes_matching_items(self):
+        focus = {"focus_symbols": [], "focus_risks": [], "ignore_paths": ["tests/", "docs/"], "notes": []}
+        items = [
+            {"path": "tests/test_foo.c"},
+            {"path": "docs/readme.md"},
+            {"path": "src/main.c"},
+        ]
+
+        filtered = scan.filter_ignored_paths(items, focus)
+
+        self.assertEqual(1, len(filtered))
+        self.assertEqual("src/main.c", filtered[0]["path"])
+
+    def _make_git_repo(self, tmp):
+        """Create a minimal git repo in tmp with two commits (so HEAD~1..HEAD works)."""
+        repo = Path(tmp)
+        scan.run(["git", "init"], repo)
+        scan.run(["git", "config", "user.email", "test@test"], repo)
+        scan.run(["git", "config", "user.name", "test"], repo)
+        (repo / "src").mkdir(exist_ok=True)
+        (repo / "src/main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+        scan.run(["git", "add", "."], repo)
+        scan.run(["git", "commit", "-m", "initial"], repo)
+        (repo / "src/main.c").write_text("int main(void) { return 1; }\n", encoding="utf-8")
+        scan.run(["git", "add", "."], repo)
+        scan.run(["git", "commit", "-m", "second"], repo)
+        return repo
+
+    def test_step_discover_outputs_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo(tmp)
+            out = repo / ".impact-scan"
+            out.mkdir(parents=True)
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                                 "--step", "discover", "--codegraph-mode", "off"])
+
+                self.assertEqual(0, ret)
+                self.assertTrue((out / "scope_discovery.json").exists())
+                discovery = json.loads((out / "scope_discovery.json").read_text(encoding="utf-8"))
+                self.assertIn("changed_files", discovery)
+            finally:
+                os.chdir(str(old_cwd))
+
+    def test_step_triage_outputs_triage_summary_and_focus_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo(tmp)
+            out = repo / ".impact-scan"
+            out.mkdir(parents=True)
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                                 "--step", "triage", "--codegraph-mode", "off",
+                                 "--focus-symbols", "main",
+                                 "--focus-risks", "memory_leak"])
+
+                self.assertEqual(0, ret)
+                self.assertTrue((out / "triage_summary.json").exists())
+                triage = json.loads((out / "triage_summary.json").read_text(encoding="utf-8"))
+                self.assertIn("focus_coverage", triage)
+            finally:
+                os.chdir(str(old_cwd))
+
+    def test_step_report_includes_focus_coverage_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo(tmp)
+            out = repo / ".impact-scan"
+            out.mkdir(parents=True)
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                # Run discover + triage first, then report
+                scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                           "--step", "discover", "--codegraph-mode", "off"])
+                scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                           "--step", "triage", "--codegraph-mode", "off"])
+                ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                                 "--step", "report", "--codegraph-mode", "off",
+                                 "--focus-symbols", "main",
+                                 "--focus-risks", "abi_layout"])
+
+                self.assertEqual(0, ret)
+                self.assertTrue((out / "risk_report.md").exists())
+                raw = (out / "risk_report.md").read_bytes()
+                self.assertTrue(raw.startswith(codecs.BOM_UTF8))
+                text = raw.decode("utf-8-sig")
+                self.assertIn("用户重点关注覆盖", text)
+            finally:
+                os.chdir(str(old_cwd))
+
+    def test_one_shot_mode_still_works(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo(tmp)
+            out = repo / ".impact-scan"
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                ret = scan.main(["--codegraph-mode", "off"])
+                self.assertEqual(0, ret)
+                self.assertTrue(out.exists())
+                md = out / "risk_report.md"
+                self.assertTrue(md.exists(), "risk_report.md should exist after one-shot scan")
+                text = md.read_bytes().decode("utf-8-sig")
+                self.assertIn("C 回归影响扫描报告", text)
+            finally:
+                os.chdir(str(old_cwd))
 
 
 if __name__ == "__main__":

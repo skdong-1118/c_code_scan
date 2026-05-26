@@ -131,9 +131,24 @@ def parse_simple_yaml_lists(text):
             current_key = line[:-1].strip()
             data.setdefault(current_key, [])
             continue
+        if not line.startswith(" ") and ":" in line:
+            key, _, value = line.partition(":")
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if value:
+                data[key] = value
+                current_key = key
+            else:
+                current_key = key
+                data.setdefault(current_key, [])
+            continue
         stripped = line.strip()
         if current_key and stripped.startswith("- "):
-            data.setdefault(current_key, []).append(stripped[2:].strip().strip("'\""))
+            existing = data.get(current_key, [])
+            if not isinstance(existing, list):
+                existing = [existing] if existing else []
+                data[current_key] = existing
+            existing.append(stripped[2:].strip().strip("'\""))
     return data
 
 
@@ -284,6 +299,135 @@ def codegraph_status(mode):
         "fallback_used_for_symbols": 0,
         "errors": [],
     }
+
+
+FOCUS_CONFIG_NAME = ".impact-scan-focus.yml"
+FOCUS_CONFIG_NAME_JSON = ".impact-scan-focus.json"
+FOCUS_CONFIG_NAME_YAML_ALT = ".impact-scan-focus.yaml"
+
+
+def load_focus_config(repo, cli_focus_symbols=None, cli_focus_risks=None, cli_ignore_paths=None):
+    """Load user-provided focus config from file and/or CLI flags.
+
+    Supports two file formats:
+      Flat YAML (preferred):
+        focus_symbols:
+          - api_open
+        focus_risks:
+          - memory_leak
+        subsystem: subsys/net
+
+      JSON:
+        {"focus": {"focus_symbols": ["api_open"], ...}}
+
+    CLI flags take precedence over file config.
+    """
+    focus = {
+        "focus_symbols": [],
+        "focus_risks": [],
+        "ignore_paths": [],
+        "notes": [],
+        "scope_override": None,
+    }
+
+    for candidate in [repo / FOCUS_CONFIG_NAME_JSON, repo / FOCUS_CONFIG_NAME, repo / FOCUS_CONFIG_NAME_YAML_ALT]:
+        if candidate.exists():
+            text = candidate.read_text(encoding="utf-8")
+            if candidate.suffix == ".json":
+                data = json.loads(text)
+            else:
+                data = parse_simple_yaml_lists(text)
+            # Support both nested {"focus": {...}} and flat format
+            raw = data.get("focus", None)
+            if isinstance(raw, dict):
+                pass  # use raw directly
+            elif isinstance(raw, list):
+                # Nested format where focus: is a list — use data as flat
+                raw = data
+            else:
+                raw = data
+            if isinstance(raw, dict):
+                focus["focus_symbols"] = _list_value(raw, "focus_symbols")
+                focus["focus_risks"] = _list_value(raw, "focus_risks")
+                focus["ignore_paths"] = _list_value(raw, "ignore_paths")
+                focus["notes"] = _list_value(raw, "notes")
+                scope = raw.get("subsystem")
+                if scope:
+                    focus["scope_override"] = scope
+            break
+
+    if cli_focus_symbols:
+        focus["focus_symbols"] = [s.strip() for s in cli_focus_symbols.split(",") if s.strip()]
+    if cli_focus_risks:
+        focus["focus_risks"] = [r.strip() for r in cli_focus_risks.split(",") if r.strip()]
+    if cli_ignore_paths:
+        focus["ignore_paths"] = [p.strip() for p in cli_ignore_paths.split(",") if p.strip()]
+
+    return focus
+
+
+def _list_value(data, key):
+    """Extract a list value from a dict, handling nested dict with list children."""
+    val = data.get(key, [])
+    if isinstance(val, list):
+        return val
+    return []
+
+
+def path_matches_any_prefix(path, prefixes):
+    """Check if path matches any of the given prefixes."""
+    if not prefixes:
+        return False
+    return path_matches_prefix(path, prefixes)
+
+
+def select_symbols_for_expansion(symbols, risks, focus):
+    """Select which symbols should have references expanded.
+
+    Expands: focus_symbols, high-risk symbols, public-interface symbols, memory-lifetime symbols.
+    Does NOT expand all changed symbols by default.
+    """
+    focus_names = set(focus.get("focus_symbols", []))
+    selected = set()
+    reasons = {}
+
+    for sym in symbols:
+        name = sym["name"]
+        if name in focus_names:
+            selected.add(name)
+            reasons[name] = "user-specified focus symbol"
+            continue
+        categories = sym.get("risk_categories", [])
+        if "memory_leak" in categories or "memory_safety" in categories:
+            selected.add(name)
+            reasons[name] = "memory-lifetime symbol"
+            continue
+
+    for risk in risks:
+        name = risk["subject"]
+        if risk["kind"] == "file":
+            continue
+        if risk["level"] == "high":
+            selected.add(name)
+            reasons.setdefault(name, "high-risk symbol (score >= 8)")
+        elif any("public" in r.lower() or "header" in r.lower() for r in risk.get("reasons", [])):
+            selected.add(name)
+            reasons.setdefault(name, "public interface symbol")
+
+    return selected, reasons
+
+
+def should_ignore_path(path, focus):
+    """Check if a path should be ignored based on user focus config."""
+    return path_matches_any_prefix(path, focus.get("ignore_paths", []))
+
+
+def filter_ignored_paths(items, focus, key="path"):
+    """Remove items whose paths match ignore_paths."""
+    ignore = focus.get("ignore_paths", [])
+    if not ignore:
+        return items
+    return [item for item in items if not path_matches_any_prefix(item.get(key, ""), ignore)]
 
 
 def decode_process_output(data):
@@ -1035,7 +1179,281 @@ def markdown_report(
     return "\n".join(lines) + "\n"
 
 
-def main():
+def _step_discover(repo, out, config, codegraph, args):
+    """Step 1: Scope discovery. Output changed files and inferred subsystems."""
+    files = parse_changed_files(repo, args.range, config)
+    subsystems_inferred = sorted(set(
+        configured_subsystem_for(item["path"], config) for item in files
+    ))
+
+    write_json(out / "scan_config.json", config)
+    write_json(out / "codegraph_status.json", codegraph)
+    write_json(out / "diff_summary.json", files)
+    write_json(out / "scope_discovery.json", {
+        "range": args.range,
+        "changed_file_count": len(files),
+        "changed_files": [item["path"] for item in files],
+        "inferred_subsystems": subsystems_inferred,
+        "c_files": [item["path"] for item in files if item["is_c"]],
+        "header_files": [item["path"] for item in files if item["is_header"]],
+        "public_interface_files": [item["path"] for item in files if item.get("is_public_interface")],
+        "build_files": [item["path"] for item in files if item["is_build_file"]],
+    })
+
+    print("Scope discovery complete.")
+    print("  Changed files: {}".format(len(files)))
+    print("  Inferred subsystems: {}".format(", ".join(subsystems_inferred) if subsystems_inferred else "none"))
+    print("  C/header files: {}".format(len([f for f in files if f["is_c"]])))
+    print("wrote {}".format(out / "scope_discovery.json"))
+    return 0
+
+
+def _step_triage(repo, out, config, codegraph, args, focus):
+    """Step 2: Quick risk triage. Score files and symbols WITHOUT reference search."""
+    files = parse_changed_files(repo, args.range, config)
+    symbols = extract_symbols(repo, args.range, args.max_symbols, config)
+
+    # Build risk items without references
+    risks = build_risk_items(files, symbols, [], config)
+
+    # Apply focus: mark which items are user-priority
+    focus_names = set(focus.get("focus_symbols", []))
+    focus_risks_set = set(focus.get("focus_risks", []))
+    for risk in risks:
+        is_focus = (
+            risk["subject"] in focus_names
+            or bool(focus_risks_set & set(risk.get("risk_categories", [])))
+        )
+        risk["user_focus"] = is_focus
+
+    # Filter out ignored paths from risk items
+    risks = filter_ignored_paths(risks, focus, "subject")
+    for sym in symbols:
+        if should_ignore_path(sym["file"], focus):
+            continue
+
+    high_count = sum(1 for r in risks if r["level"] == "high")
+    medium_count = sum(1 for r in risks if r["level"] == "medium")
+    arch_summary = build_architecture_risk_summary(risks)
+
+    write_json(out / "scan_config.json", config)
+    write_json(out / "codegraph_status.json", codegraph)
+    write_json(out / "diff_summary.json", files)
+    write_json(out / "changed_symbols.json", symbols)
+    write_json(out / "risk_items.json", risks)
+    write_json(out / "architecture_risk_summary.json", arch_summary)
+    write_json(out / "triage_summary.json", {
+        "range": args.range,
+        "total_risks": len(risks),
+        "high": high_count,
+        "medium": medium_count,
+        "low": len(risks) - high_count - medium_count,
+        "symbol_count": len(symbols),
+        "focus_coverage": {
+            "focus_symbols_found": [s["name"] for s in symbols if s["name"] in focus_names],
+            "focus_symbols_missing": list(focus_names - set(s["name"] for s in symbols)),
+            "focus_risks_detected": sorted(focus_risks_set & set(
+                c for r in risks for c in r.get("risk_categories", [])
+            )),
+        },
+        "expansion_candidates": _expansion_candidates(risks, symbols, focus),
+    })
+
+    print("Triage complete.")
+    print("  Risk items: {} (high={}, medium={}, low={})".format(
+        len(risks), high_count, medium_count, len(risks) - high_count - medium_count))
+    print("  Symbols extracted: {}".format(len(symbols)))
+    if focus_names:
+        print("  Focus symbols found: {}".format(
+            ", ".join(s["name"] for s in symbols if s["name"] in focus_names) or "none"))
+    print("wrote {}".format(out / "triage_summary.json"))
+    return 0
+
+
+def _expansion_candidates(risks, symbols, focus):
+    """Build list of symbols that would be expanded in the expand step."""
+    selected, reasons = select_symbols_for_expansion(symbols, risks, focus)
+    return [
+        {"symbol": name, "reason": reasons.get(name, "unknown")}
+        for name in sorted(selected)
+    ]
+
+
+def _step_expand(repo, out, config, codegraph, args, focus):
+    """Step 3: Focused reference expansion. Only search refs for selected symbols."""
+    files = _load_json_artifact(out, "diff_summary.json", [])
+    symbols = _load_json_artifact(out, "changed_symbols.json", [])
+    risks = _load_json_artifact(out, "risk_items.json", [])
+
+    if not symbols:
+        symbols = extract_symbols(repo, args.range, args.max_symbols, config)
+        write_json(out / "changed_symbols.json", symbols)
+
+    selected, reasons = select_symbols_for_expansion(symbols, risks, focus)
+
+    # Gather references only for selected symbols
+    refs = []
+    for sym in symbols:
+        if sym["name"] in selected:
+            backend = "none"
+            files_found = run_codegraph_impact(repo, sym["name"], args.max_refs, codegraph)
+            if files_found:
+                backend = "codegraph"
+                codegraph["used_for_symbols"] += 1
+            else:
+                files_found = rg_references(repo, sym["name"], args.max_refs)
+                if files_found:
+                    backend = "rg"
+                    codegraph["fallback_used_for_symbols"] += 1
+            refs.append(reference_result(sym["name"], backend, files_found, config))
+        else:
+            refs.append(reference_result(sym["name"], "skipped", [], config))
+
+    # Rebuild risks with reference data
+    risks = build_risk_items(files, symbols, refs, config)
+    risks = filter_ignored_paths(risks, focus, "subject")
+    impact_paths = build_impact_paths(refs, config)
+
+    write_json(out / "codegraph_status.json", codegraph)
+    write_json(out / "references.json", refs)
+    write_json(out / "impact_paths.json", impact_paths)
+    write_json(out / "risk_items.json", risks)
+    write_json(out / "expansion_summary.json", {
+        "total_symbols": len(symbols),
+        "expanded_symbols": len(selected),
+        "skipped_symbols": len(symbols) - len(selected),
+        "expanded": [
+            {"symbol": name, "reason": reasons.get(name, "unknown"),
+             "ref_count": next((r["file_count"] for r in refs if r["symbol"] == name), 0)}
+            for name in sorted(selected)
+        ],
+        "codegraph_hits": codegraph["used_for_symbols"],
+        "fallback_hits": codegraph["fallback_used_for_symbols"],
+    })
+
+    print("Expansion complete.")
+    print("  Expanded {} / {} symbols".format(len(selected), len(symbols)))
+    print("  CodeGraph hits: {}, fallback hits: {}".format(
+        codegraph["used_for_symbols"], codegraph["fallback_used_for_symbols"]))
+    print("wrote {}".format(out / "expansion_summary.json"))
+    return 0
+
+
+def _step_report(repo, out, config, codegraph, args, focus):
+    """Step 5: Generate final Chinese Markdown report from all collected artifacts."""
+    files = _load_json_artifact(out, "diff_summary.json", [])
+    symbols = _load_json_artifact(out, "changed_symbols.json", [])
+    refs = _load_json_artifact(out, "references.json", [])
+    risks = _load_json_artifact(out, "risk_items.json", [])
+
+    # If we have no artifacts yet, run a quick one-shot
+    if not files and not symbols:
+        files = parse_changed_files(repo, args.range, config)
+        symbols = extract_symbols(repo, args.range, args.max_symbols, config)
+        write_json(out / "diff_summary.json", files)
+        write_json(out / "changed_symbols.json", symbols)
+
+    if not refs:
+        refs = gather_references(repo, symbols, args.max_refs, codegraph, config)
+        write_json(out / "references.json", refs)
+
+    if not risks:
+        risks = build_risk_items(files, symbols, refs, config)
+        write_json(out / "risk_items.json", risks)
+
+    risks = filter_ignored_paths(risks, focus, "subject")
+    impact_paths = build_impact_paths(refs, config)
+    subsystems = subsystem_impact(files, refs, config)
+    subsystem_analysis = build_subsystem_analysis(files, refs, risks, impact_paths, config)
+    arch_summary = build_architecture_risk_summary(risks)
+
+    report_text = markdown_report_with_focus(
+        args.range, codegraph, files, symbols, refs, risks,
+        subsystems, config, impact_paths, arch_summary,
+        subsystem_analysis, focus,
+    )
+
+    write_json(out / "codegraph_status.json", codegraph)
+    write_json(out / "impact_paths.json", impact_paths)
+    write_json(out / "risk_items.json", risks)
+    write_json(out / "architecture_risk_summary.json", arch_summary)
+    write_json(out / "manual_review.json", manual_review_items(risks))
+    write_json(out / "subsystem_impact.json", subsystems)
+    write_json(out / "subsystem_analysis.json", subsystem_analysis)
+    write_markdown_report(out / "risk_report.md", report_text)
+
+    print("Report complete.")
+    top_level = risks[0]["level"] if risks else "low"
+    print("  Overall risk: {}".format(top_level))
+    print("wrote {}".format(out / "risk_report.md"))
+    return 0
+
+
+def _load_json_artifact(out, filename, default):
+    path = out / filename
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            return default
+    return default
+
+
+def markdown_report_with_focus(
+    commit_range, codegraph, files, symbols, refs, risks,
+    subsystems, config, impact_paths, arch_summary,
+    subsystem_analysis, focus,
+):
+    """Generate markdown report with user focus coverage section."""
+    base = markdown_report(
+        commit_range, codegraph, files, symbols, refs, risks,
+        subsystems, config, impact_paths, arch_summary,
+        subsystem_analysis,
+    )
+
+    focus_names = set(focus.get("focus_symbols", []))
+    focus_risks_set = set(focus.get("focus_risks", []))
+    notes = focus.get("notes", [])
+
+    if not focus_names and not focus_risks_set and not notes:
+        return base
+
+    extra = ["", "## 用户重点关注覆盖", ""]
+
+    if focus_names:
+        found = [s["name"] for s in symbols if s["name"] in focus_names]
+        missing = focus_names - set(found)
+        extra.append("- 指定关注 symbol: {}".format(", ".join("`{}`".format(n) for n in sorted(focus_names))))
+        if found:
+            extra.append("- 已分析: {}".format(", ".join("`{}`".format(n) for n in sorted(found))))
+        if missing:
+            extra.append("- 未在变更中发现: {}".format(", ".join("`{}`".format(n) for n in sorted(missing))))
+
+    if focus_risks_set:
+        detected = set()
+        for risk in risks:
+            detected.update(risk.get("risk_categories", []))
+        covered = focus_risks_set & detected
+        uncovered = focus_risks_set - detected
+        extra.append("- 指定关注风险类别: {}".format(", ".join("`{}`".format(r) for r in sorted(focus_risks_set))))
+        if covered:
+            extra.append("- 检测到: {}".format(", ".join("`{}`".format(r) for r in sorted(covered))))
+        if uncovered:
+            extra.append("- 未检测到: {}".format(", ".join("`{}`".format(r) for r in sorted(uncovered))))
+
+    if notes:
+        extra.append("- 用户备注:")
+        for note in notes:
+            extra.append("  - {}".format(note))
+
+    ignore = focus.get("ignore_paths", [])
+    if ignore:
+        extra.append("- 已排除路径: {}".format(", ".join("`{}`".format(p) for p in ignore)))
+
+    return base + "\n".join(extra) + "\n"
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Scan C change impact for architecture regression risk.")
     parser.add_argument("--range", default="HEAD~1..HEAD", help="git commit range to scan")
     parser.add_argument("--out", default=".impact-scan", help="output directory")
@@ -1053,7 +1471,33 @@ def main():
         action="store_true",
         help="Attempt non-destructive CodeGraph init/index commands when .codegraph is absent.",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--step",
+        choices=["discover", "triage", "expand", "report"],
+        default=None,
+        help="Run a single guided-workflow step. Omit for one-shot full scan.",
+    )
+    parser.add_argument(
+        "--focus",
+        default=None,
+        help="Path to focus config file (.impact-scan-focus.yml or .json).",
+    )
+    parser.add_argument(
+        "--focus-symbols",
+        default=None,
+        help="Comma-separated list of symbols the user cares most about.",
+    )
+    parser.add_argument(
+        "--focus-risks",
+        default=None,
+        help="Comma-separated list of risk categories the user cares most about.",
+    )
+    parser.add_argument(
+        "--ignore-paths",
+        default=None,
+        help="Comma-separated list of path prefixes to exclude from reports.",
+    )
+    args = parser.parse_args(argv)
 
     cwd = Path.cwd()
     try:
@@ -1064,7 +1508,30 @@ def main():
 
     out = repo / args.out
     out.mkdir(parents=True, exist_ok=True)
-    config = load_scan_config(repo, args.subsystem)
+
+    # Resolve focus: --focus file takes precedence, CLI flags override
+    focus_repo = repo
+    if args.focus:
+        focus_path = Path(args.focus)
+        if not focus_path.is_absolute():
+            focus_path = cwd / focus_path
+        if focus_path.exists():
+            focus_repo = focus_path.parent
+    focus = load_focus_config(focus_repo, args.focus_symbols, args.focus_risks, args.ignore_paths)
+
+    # Scope override from focus config
+    subsystem = args.subsystem or focus.get("scope_override") or ""
+    config = load_scan_config(repo, subsystem)
+
+    # Merge focus config legacy_paths / public_interfaces into scan config
+    if focus.get("scope_override"):
+        for key in ("legacy_paths", "public_interfaces"):
+            values = focus.get(key, [])
+            if values:
+                for v in values:
+                    normalized = scoped_prefix(subsystem, str(v))
+                    if normalized and normalized not in config.setdefault(key, []):
+                        config[key].append(normalized)
 
     codegraph = prepare_codegraph(repo, args.codegraph_mode, args.init_codegraph)
     if args.codegraph_mode == "required" and not codegraph["available"]:
@@ -1072,10 +1539,21 @@ def main():
         print("error: CodeGraph is required but codegraph executable was not found", file=sys.stderr)
         return 3
 
+    if args.step == "discover":
+        return _step_discover(repo, out, config, codegraph, args)
+    elif args.step == "triage":
+        return _step_triage(repo, out, config, codegraph, args, focus)
+    elif args.step == "expand":
+        return _step_expand(repo, out, config, codegraph, args, focus)
+    elif args.step == "report":
+        return _step_report(repo, out, config, codegraph, args, focus)
+
+    # --- One-shot mode (no --step): backward compatible ---
     files = parse_changed_files(repo, args.range, config)
     symbols = extract_symbols(repo, args.range, args.max_symbols, config)
     refs = gather_references(repo, symbols, args.max_refs, codegraph, config)
     risks = build_risk_items(files, symbols, refs, config)
+    risks = filter_ignored_paths(risks, focus, "subject")
     subsystems = subsystem_impact(files, refs, config)
     impact_paths = build_impact_paths(refs, config)
     subsystem_analysis = build_subsystem_analysis(files, refs, risks, impact_paths, config)
@@ -1094,18 +1572,10 @@ def main():
     write_json(out / "subsystem_analysis.json", subsystem_analysis)
     write_markdown_report(
         out / "risk_report.md",
-        markdown_report(
-            args.range,
-            codegraph,
-            files,
-            symbols,
-            refs,
-            risks,
-            subsystems,
-            config,
-            impact_paths,
-            arch_summary,
-            subsystem_analysis,
+        markdown_report_with_focus(
+            args.range, codegraph, files, symbols, refs, risks,
+            subsystems, config, impact_paths, arch_summary,
+            subsystem_analysis, focus,
         ),
     )
 
