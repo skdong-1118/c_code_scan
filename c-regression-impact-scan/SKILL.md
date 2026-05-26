@@ -1,6 +1,6 @@
 ---
 name: c-regression-impact-scan
-description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, architecture flow, business flow, cross-subsystem behavior, memory leaks, ownership/lifetime, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic flow-impact plus memory-leak rules. The final deliverable must be a Chinese Markdown detection report.
+description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, memory safety, ABI/layout, concurrency, error handling, ownership/lifetime, macro/config behavior, protocol compatibility, state timing, callback dispatch, performance/resource usage, security boundaries, build/deploy behavior, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic architecture risk rules. The final deliverable must be a Chinese Markdown detection report.
 ---
 
 # C Regression Impact Scan
@@ -51,17 +51,17 @@ The target environment is a large commercial C codebase, usually intranet-only, 
    - `.impact-scan/subsystem_impact.json`
    - `.impact-scan/subsystem_analysis.json`
    - `.impact-scan/risk_items.json`
-   - `.impact-scan/architecture_risk_summary.json` (kept for compatibility; usually empty in flow-focused mode)
+   - `.impact-scan/architecture_risk_summary.json`
    - `.impact-scan/manual_review.json`
 9. Produce a final Chinese Markdown detection report. Use `.impact-scan/risk_report.md` as the base report, refine it if needed, and ensure the final answer points to the generated `.md` file. The Markdown report must include:
    - overall risk: high, medium, or low
    - whether CodeGraph was used successfully
    - the three analysis layers: CodeGraph, Heuristic, and Manual Review
    - high-risk changed files and symbols
-   - affected legacy subsystem candidates, with per-subsystem impact reason, changed files, referenced files, changed tokens, and suggested checks
+   - affected legacy subsystem candidates, with per-subsystem impact reason, changed files, referenced files, changed symbols, risk categories, and suggested checks
    - evidence paths from changed item to references
-   - architecture flow-impact findings
-   - memory leak and ownership-lifetime findings
+   - memory-lifetime and leak-risk findings
+   - architecture risk categories
    - mandatory manual-review items
    - suggested regression tests
    - scan limitations and confidence
@@ -87,6 +87,9 @@ repo/
 ```
 
 ```yaml
+public_interfaces:
+  - include/
+  - sdk/include/
 legacy_paths:
   - legacy/
   - product/stable/
@@ -139,7 +142,7 @@ CodeGraph is useful for:
 - include/import relationships
 - subsystem spread
 
-Do not claim CodeGraph proves a change is safe. It provides impact evidence for architecture flow review, but business behavior still needs targeted regression validation.
+Do not claim CodeGraph proves a change is safe. In C code, macro expansion, conditional compilation, function pointers, callbacks, and platform-specific build flags can hide impact.
 
 ## Claude Code Guidance
 
@@ -169,54 +172,77 @@ Use CodeGraph to find:
 - callers and callees
 - include/import relationships
 - subsystem spread
-- changed token to referenced file impact paths
+- changed symbol to referenced file impact paths
 
-CodeGraph gives impact evidence. It does not prove business behavior is safe; use the evidence to select affected flows and regression scenarios.
+CodeGraph gives impact evidence. It does not prove C behavior is safe, especially when macro expansion, conditional compilation, function pointers, callbacks, platform-specific build flags, or generated code are involved.
 
 ### Heuristic 层
 
 Use deterministic rules to identify risk signals from:
 
-- changed files and subsystem paths
-- legacy paths
-- architecture flow paths
-- reference count
-- subsystem spread
-- CodeGraph or `rg` impact paths
+- variable names and function names
+- file paths and subsystem paths
+- git diff content
+- changed public headers
+- changed macros, structs, callbacks, globals, memory-lifetime code
+- architecture risk categories and scores
 
-Heuristic analysis is only `flow impact triage`. It can say "this should be reviewed" or "this flow is likely affected"; it must not say "this is safe" unless stronger evidence exists.
+Heuristic analysis is only `risk triage`. It can say "this should be reviewed" or "this is likely high risk"; it must not say "this is safe" unless stronger evidence exists.
 
 ### Manual Review 层
 
-When static evidence is incomplete, write the item into the Markdown report under `必须人工 Review` and ask engineers to manually inspect it. This layer is mandatory for architecture-flow risks that ordinary symbol/reference graphs cannot reliably resolve:
+When static evidence is incomplete, write the item into the Markdown report under `必须人工 Review` and ask engineers to manually inspect it. This layer is mandatory for C risks that ordinary symbol/reference graphs cannot reliably resolve:
 
-- changed path is in a configured architecture flow directory
-- changed path is in a configured legacy feature directory
-- changed token is referenced by legacy feature files
-- changed token is referenced by many files
-- changed token crosses multiple subsystems
-- impact path reaches an old feature flow or compatibility flow
-- CodeGraph is unavailable or has sparse results
-- memory-lifetime evidence appears in changed lines
+- same address used through different variable names
+- pointer alias and ownership transfer
+- struct field passing, such as `ctx->buf` becoming `arg` or callback data
+- callback, async flow, queue, timer, thread, or interrupt lifetime
+- allocation/free balance and error cleanup paths
+- `realloc` failure handling and buffer resize ownership
+- refcount increment/decrement balance
+- macro or platform-specific compile path differences
 
 For each Manual Review item, include the subject, kind, level, reasons, evidence files when available, and what the engineer should verify. The purpose is to reduce manual review scope, not to replace the architect's judgment.
 
 ## Risk Rules
 
-Use deterministic flow-impact scoring before model reasoning. Treat these as default weights:
+Use deterministic scoring before model reasoning. Treat these as default weights:
 
-- configured architecture flow path changed: +4
-- configured legacy feature path changed: +5
-- legacy reference from CodeGraph or `rg`: +5
-- changed token referenced by 10 or more files: +3
-- changed token referenced across 3 or more top-level subsystems: +3
-- large change size: +2
-- memory leak or ownership-lifetime related change: +5
-- memory-sensitive path on memory-lifetime change: +3
+- changed public `.h` file: +4
+- changed path containing `include`, `common`, `public`, `api`, `lib`, `platform`, `protocol`, `sdk`, or `adapter`: +3
+- function signature or declaration changed: +4
+- `struct`, `union`, `enum`, or `typedef` changed: +4
+- macro or conditional compilation changed: +3
+- function pointer, callback, ops table, or vtable-like table changed: +4
+- memory allocation/lifetime related change: +5
+- memory-sensitive path change: +2 to +3
+- legacy reference from CodeGraph or `rg`: +4
+- configured high-risk path change: +3
+- semantic behavior keyword changed, such as return/error/NULL/size/lock: +2
+- global variable changed: +2
+- changed symbol referenced by 10 or more files: +3
+- changed symbol referenced across 3 or more top-level subsystems: +3
+- build file or feature switch changed: +3
+
+Architecture risk category weights:
+
+- `memory_safety`: +5
+- `memory_leak`: +5
+- `abi_layout`: +5
+- `concurrency`: +4
+- `error_handling`: +3
+- `ownership_lifetime`: +4
+- `macro_config`: +3
+- `protocol_compatibility`: +4
+- `state_machine_timing`: +4
+- `callback_dispatch`: +4
+- `performance_resource`: +3
+- `security_boundary`: +5
+- `build_deploy`: +3
 
 Risk level:
 
-- `high`: score >= 8
+- `high`: score >= 8, or any public header/API change with broad references
 - `medium`: score 4-7
 - `low`: score 0-3 and narrow local references
 
@@ -226,39 +252,63 @@ Confidence:
 - `medium`: `rg` references and file-level evidence exist
 - `low`: only diff heuristics were available, or generated references are sparse
 
-## Architecture Flow Review Focus
+## C-Specific Review Focus
 
-发现以下架构流程影响时必须在报告中突出说明：
+发现以下 C 风险时必须在报告中突出说明：
 
-- 直接修改 configured architecture flow path
-- 直接修改 configured legacy feature path
-- changed token 被 legacy feature files 引用
-- changed token 引用范围很广
-- changed token 跨多个 subsystem
-- Impact Paths 到达老功能、稳定功能或兼容流程
-- memory-lifetime changed token，例如 `malloc`, `calloc`, `realloc`, `strdup`, `free`, `release`, `destroy`, `cleanup`, `refcount`
-- CodeGraph 不可用或结果稀疏，需要降低 confidence
+- 公共头文件变化
+- 结构体布局变化，包括字段顺序和字段类型变化
+- 枚举值变化
+- 宏默认值变化
+- `#ifdef` / `#if` 行为变化
+- 回调注册和函数指针表变化
+- 分配/释放所有权变化以及潜在泄漏路径
+- `malloc`, `calloc`, `realloc`, `strdup`, `free`, `release`, `destroy`, `cleanup`, `refcount`, buffer size, and error-exit path changes
+- 错误码、返回值、所有权、生命周期或 buffer size 语义变化
+- 老功能子系统使用的共享模块变化
 
-## Memory Leak Focus
+## 架构风险类别
 
-内存泄漏作为唯一保留的 C 语言专项风险。发现 `memory-lifetime` changed token 时，报告必须包含 `内存泄漏关注点`，并要求验证：
+检测到以下类别时，必须写入中文 Markdown 报告：
 
-- allocation/free 是否成对
-- ownership transfer 是否清晰
-- cleanup paths 是否覆盖异常路径
-- refcount increment/decrement 是否平衡
-- legacy repeated-call paths 是否存在累积泄漏风险
+- `memory_safety`: buffer overflow, out-of-bounds, use-after-free, double free, uninitialized memory, unsafe copy/format operations
+- `memory_leak`: allocation/free imbalance, missing cleanup, refcount imbalance, `realloc` failure handling
+- `abi_layout`: struct/union/enum/typedef layout, packing, alignment, exported symbol, or binary interface change
+- `concurrency`: lock/unlock asymmetry, race condition, atomic/refcount behavior, thread/timer/interrupt interaction
+- `error_handling`: changed return value, error code, `goto error`, `NULL` handling, cleanup path
+- `ownership_lifetime`: ownership transfer, init/destroy order, retain/release, object lifetime across callbacks
+- `macro_config`: macro default, feature flag, platform conditional, build-time behavior
+- `protocol_compatibility`: wire format, version, endian, opcode, field meaning, persistent data compatibility
+- `state_machine_timing`: state transition, event order, timer, timeout, retry, start/stop sequence
+- `callback_dispatch`: function pointer table, ops table, handler registration, dispatch table
+- `performance_resource`: CPU, memory peak, file/socket/thread/timer resources, loop complexity, lock contention
+- `security_boundary`: auth, permission, input validation, path/command injection, integer or buffer overflow
+- `build_deploy`: Makefile/CMake/link flags, exported symbols, install/deploy behavior, default build options
+
+## 内存泄漏关注点
+
+当报告标记 `memory-lifetime` 时，不要把它当成普通函数变化处理。需要要求或建议进行内存泄漏专项验证：
+
+- 内存分配成功和失败路径
+- 提前 `return` / `goto error` 清理路径
+- 调用者和被调用者之间的所有权转移
+- 引用计数递增和递减是否平衡
+- buffer resize 和 `realloc` 错误处理
+- callback 清理和模块卸载路径
+- 重复调用或长时间运行的老功能路径
+
+如果内网环境没有动态分析工具，建议对受影响老功能做定向压力循环和进程内存监控。
 
 ## Report Style
 
-The output report must be Chinese Markdown, but technical terms should stay in English when that is clearer. Prefer mixed wording such as `changed tokens`, `subsystem`, `legacy path`, `impact path`, `business flow`, `compile database`, and `CodeGraph`.
+The output report must be Chinese Markdown, but technical terms should stay in English when that is clearer. Prefer mixed wording such as `changed symbols`, `subsystem`, `legacy path`, `memory-lifetime`, `ABI`, `callback`, `dispatch table`, `compile database`, and `CodeGraph`.
 
 Keep these sections unless there is a strong reason to add more:
 
 - `概要`
 - `分析分层`
 - `高/中风险项`
-- `架构流程影响类别`
+- `架构风险类别`
 - `受影响 subsystem 候选`
 - `Reference Evidence`
 - `Impact Paths`
@@ -269,7 +319,7 @@ Keep these sections unless there is a strong reason to add more:
 
 Use evidence-backed language. Prefer:
 
-> "This commit is high risk because a changed token is referenced by legacy feature files and spans 7 subsystems."
+> "This commit is high risk because `include/foo.h` changed and references were found in 7 subsystems."
 
 Avoid:
 
@@ -277,7 +327,7 @@ Avoid:
 
 When evidence is incomplete, say exactly why:
 
-> "Confidence is medium because CodeGraph did not return complete impact paths and fallback references were sparse."
+> "Confidence is medium because no compile database or semantic C index was available; macro-expanded paths were not verified."
 
 ## Windows Intranet Notes
 
