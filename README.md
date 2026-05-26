@@ -1,6 +1,6 @@
 # C 回归影响扫描 Skill
 
-`c-regression-impact-scan` 是一个面向 Claude Code 的 C 语言回归影响分析 skill，用来判断**最近一次代码修改是否可能影响已有功能、老功能或稳定子系统行为**。
+`c-regression-impact-scan` 是一个面向 Claude Code 的 C 工程架构流程影响分析 skill，用来判断**最近一次代码修改是否可能影响已有功能、老功能或稳定子系统行为**。
 
 它适合以下场景：
 
@@ -19,7 +19,7 @@
 
 ## 解决什么问题
 
-在大型 C 工程中，新功能开发经常会修改公共模块、宏、回调表、状态机或生命周期逻辑，从而影响已有功能。这个 skill 把这类回归风险分析固化为一个可重复流程：
+在大型 C 工程中，新功能开发经常会修改公共模块、流程入口、跨 subsystem 协作路径或老功能依赖路径，从而影响已有功能。这个 skill 把这类回归影响分析固化为一个可重复流程：
 
 ```text
 git diff
@@ -27,7 +27,7 @@ git diff
   -> 优先调用 CodeGraph 查询影响面
   -> rg 作为兜底引用搜索
   -> 按子系统聚合影响范围
-  -> 按架构风险规则打分
+  -> 按架构流程影响规则打分
   -> 生成 Markdown 检测报告
 ```
 
@@ -94,7 +94,7 @@ C:\Users\<用户名>\.claude\skills\c-regression-impact-scan
 检查最近提交有没有影响老功能
 看这次改动是否有回归风险
 分析这个子系统最近修改的影响
-检查 C 代码改动是否可能导致内存泄漏
+分析这个子系统最近修改是否影响老功能流程
 ```
 
 如果自动触发失败，可以显式指定：
@@ -169,10 +169,6 @@ high_risk_paths:
   - protocol/
   - storage/
   - upgrade/
-memory_sensitive_paths:
-  - core/session/
-  - buffer/
-  - memory/
 low_risk_paths:
   - tests/
   - docs/
@@ -219,7 +215,7 @@ subsys/net/include/
 .impact-scan/subsystem_impact.json
 .impact-scan/subsystem_analysis.json
 .impact-scan/risk_items.json
-.impact-scan/architecture_risk_summary.json
+.impact-scan/architecture_risk_summary.json  # 兼容保留，flow-focused 模式通常为空
 .impact-scan/manual_review.json
 ```
 
@@ -242,199 +238,81 @@ subsys/net/include/
 - `Summary`
 - `Analysis Layers`
 - `High And Medium Risk Items`
-- `Architecture Risk Categories`
+- `Architecture Flow Impact Categories`
 - `Affected Subsystem Candidates`
 - `Reference Evidence`
 - `Impact Paths`
 - `Must Review Manually`
-- `Memory Leak Focus`
 - `Suggested Regression Checks`
 - `Limitations`
 
-报告语言风格为中文描述为主，但专业术语保留英文，例如 `changed symbols`、`subsystem`、`legacy path`、`memory-lifetime`、`callback`、`dispatch table`、`compile database`、`CodeGraph`。这样便于工程团队阅读，也避免强行翻译造成歧义。
+报告语言风格为中文描述为主，但专业术语保留英文，例如 `changed tokens`、`subsystem`、`legacy path`、`impact path`、`business flow`、`compile database`、`CodeGraph`。这样便于工程团队阅读，也避免强行翻译造成歧义。
 
 报告会明确区分三层分析：
 
 - `CodeGraph 层`：查找 function/symbol reference、callers/callees、include/import 关系和 subsystem 影响面，提供 impact evidence。
-- `Heuristic 层`：根据变量名、函数名、路径、diff 内容、risk category 和 deterministic scoring 识别风险信号，只作为 risk triage。
-- `Manual Review 层`：对同一地址不同变量名、pointer alias、ownership transfer、callback/async flow、struct field 传递、error cleanup path 等工具难以证明的问题，输出到报告里的 `必须人工 Review`，让工程师按清单人工排查。
+- `Heuristic 层`：根据 changed files、legacy paths、architecture flow paths、reference count 和 subsystem spread 识别流程影响信号，只作为 flow impact triage。
+- `Manual Review 层`：对跨 subsystem 流程、legacy feature path、异步/回调流程和人工业务路径确认项，输出到报告里的 `必须人工 Review`，让工程师按清单人工排查。
 
 其中 `Affected Subsystem Candidates` 不只列出命中数量，还会按 subsystem 展开：
 
-- `Impact reason`：说明为什么该 subsystem 可能受影响，例如 legacy path 引用、high-risk architecture path、memory-sensitive path 或跨 subsystem reference。
+- `Impact reason`：说明为什么该 subsystem 可能受影响，例如 legacy path 引用、architecture flow path 或跨 subsystem reference。
 - `Changed files`：列出本次提交在该 subsystem 内直接修改的文件。
 - `Referenced/impact files`：列出 CodeGraph 或 fallback 搜索命中的引用文件，用于定位老功能调用链。
-- `Symbols`：列出把本次修改与该 subsystem 关联起来的 changed symbol。
-- `Risk categories`：列出 `memory_leak`、`concurrency`、`protocol_compatibility` 等架构风险类别。
-- `Suggested checks`：给出该 subsystem 推荐的 legacy tests、memory-lifetime check、protocol compatibility 验证等检查动作。
+- `Symbols`：列出把本次修改与该 subsystem 关联起来的 changed token。
+- `Suggested checks`：给出该 subsystem 推荐的 legacy tests、business flow replay、跨 subsystem 联调等检查动作。
 
 弱模型或内网 Claude Code 可以优先读取 `.impact-scan/subsystem_analysis.json`，再把其中内容整理进最终 Markdown 报告。
 
 ## 检查项说明
 
-### 内存安全
-
-风险类别：`memory_safety`
+### Legacy Feature Path
 
 检查内容：
 
-- `memcpy`
-- `memmove`
-- `memset`
-- 字符串拷贝和格式化函数
-- 长度、大小、边界处理
-- overflow / bounds 相关逻辑
+- 是否直接修改 `legacy_paths`
+- changed token 是否被 legacy feature files 引用
+- Impact Paths 是否到达老功能路径
 
 风险原因：
 
-这类改动可能引入越界访问、内存破坏、use-after-free、double free 或数据损坏。
+老功能路径通常承载稳定行为，任何引用命中都需要优先做回归验证。
 
-### 内存泄漏和生命周期
-
-风险类别：`memory_leak`、`ownership_lifetime`
+### Architecture Flow Path
 
 检查内容：
 
-- `malloc`
-- `calloc`
-- `realloc`
-- `strdup`
-- `free`
-- `release`
-- `destroy`
-- `cleanup`
-- `refcount` / `refcnt`
-- 所有权转移
-- init / destroy 顺序
-- 错误路径释放逻辑
+- 是否修改 `high_risk_paths`
+- 是否修改平台、协议、存储、升级、适配、公共流程模块
+- 是否影响跨模块流程入口或流程编排点
 
 风险原因：
 
-长期运行的老功能、循环调用路径和异常路径更容易暴露泄漏、引用计数不平衡或释放顺序问题。
+这些路径往往不是单点功能，而是多个 subsystem 共用的流程节点。
 
-### 并发和锁
-
-风险类别：`concurrency`
+### Cross-Subsystem Impact
 
 检查内容：
 
-- mutex / spinlock / rwlock / semaphore
-- lock / unlock 对称性
-- atomic / refcount 操作
-- thread / task / timer / interrupt 交互
+- changed token 是否跨 3 个以上 subsystem
+- 影响文件是否分布在多个业务域
+- 是否需要端到端业务流程回放
 
 风险原因：
 
-小范围改动也可能引入竞态、死锁、引用计数原子性问题或对象生命周期错乱。
+跨 subsystem 影响更容易造成局部测试无法覆盖的老功能回归。
 
-### 宏和配置行为
-
-风险类别：`macro_config`
+### Broad Reference Impact
 
 检查内容：
 
-- `#define`
-- `#ifdef`
-- `#ifndef`
-- `#if`
-- `#elif`
-- `#undef`
-- `CONFIG_*`
-- `FEATURE_*`
-- `ENABLE_*` / `DISABLE_*`
-- 平台相关编译开关
+- changed token 是否被 10 个以上文件引用
+- 引用是否集中在稳定路径或老功能路径
+- 是否需要按引用分布选择重点回归场景
 
 风险原因：
 
-宏变化可能只影响某些平台、产品形态、编译配置或内网定制版本。
-
-### 协议和数据兼容
-
-风险类别：`protocol_compatibility`
-
-检查内容：
-
-- 协议版本
-- 字节序转换
-- TLV / packet 字段
-- opcode / command
-- message / frame 解析
-- 类 schema 字段变化
-- 持久化数据格式
-
-风险原因：
-
-老客户端、旧设备、历史数据、升级回退路径可能依赖旧格式。
-
-### 状态机和时序
-
-风险类别：`state_machine_timing`
-
-检查内容：
-
-- 状态跳转
-- event 顺序
-- timer 行为
-- timeout 值
-- retry 行为
-- start / stop 顺序
-
-风险原因：
-
-老功能常常依赖隐含的状态顺序、事件顺序和时序假设。
-
-### 回调和分发表
-
-风险类别：`callback_dispatch`
-
-检查内容：
-
-- 函数指针
-- callback 注册
-- ops table
-- handler table
-- dispatch table
-- command table
-
-风险原因：
-
-这类关系在普通调用图中容易漏掉，但在 C 架构中经常是核心扩展点。
-
-### 性能和资源消耗
-
-风险类别：`performance_resource`
-
-检查内容：
-
-- CPU 密集循环
-- 内存峰值
-- 文件描述符
-- socket
-- thread
-- timer
-- queue
-- lock contention
-
-风险原因：
-
-回归不一定表现为功能错误，也可能表现为延迟、资源耗尽、吞吐下降或系统不稳定。
-
-### 安全边界
-
-风险类别：`security_boundary`
-
-检查内容：
-
-- auth / permission
-- token / credential
-- path / command 处理
-- 输入校验
-- sanitize
-- overflow 风险
-
-风险原因：
-
-安全边界相关改动即使功能可用，也应该按高风险处理。
+引用范围越广，越需要用业务流程而不是单文件视角做评估。
 
 ## 风险评分
 
@@ -446,19 +324,15 @@ medium  score 4-7
 low     score 0-3
 ```
 
-部分风险权重：
+部分流程影响权重：
 
 ```text
-memory_safety           +5
-memory_leak             +5
-security_boundary       +5
-concurrency             +4
-ownership_lifetime      +4
-protocol_compatibility  +4
-state_machine_timing    +4
-callback_dispatch       +4
-macro_config            +3
-performance_resource    +3
+legacy feature path changed        +5
+legacy reference from CodeGraph    +5
+architecture flow path changed     +4
+broad reference impact             +3
+cross-subsystem flow impact        +3
+large change size                  +2
 ```
 
 评分只是 triage 信号，不等价于已经证明存在缺陷。
@@ -491,10 +365,9 @@ codegraph impact --symbol <symbol>
 ## 局限性
 
 - 这是回归风险 triage 工具，不是兼容性证明工具。
-- 没有完整 C 编译信息时，宏展开和条件编译路径可能不完整。
-- 函数指针和 callback 关系依赖 CodeGraph 能力，否则只能启发式判断。
+- CodeGraph 索引不完整时，Impact Paths 可能不完整。
 - 简单 YAML 解析器只支持顶层 list。
-- 架构风险类别主要基于关键词和路径规则，需要人工 review 高风险项。
+- 当前版本聚焦架构流程和功能影响，不做 C 语言语法级 memory、macro、concurrency 等专项风险判断。
 
 ## 开发验证
 

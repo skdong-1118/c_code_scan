@@ -24,8 +24,6 @@ class CImpactScanTests(unittest.TestCase):
                         "  - legacy/",
                         "high_risk_paths:",
                         "  - platform/",
-                        "memory_sensitive_paths:",
-                        "  - core/session/",
                     ]
                 ),
                 encoding="utf-8",
@@ -36,7 +34,6 @@ class CImpactScanTests(unittest.TestCase):
         self.assertEqual("subsys/net", config["scope_path"])
         self.assertIn("subsys/net/legacy/", config["legacy_paths"])
         self.assertIn("subsys/net/platform/", config["high_risk_paths"])
-        self.assertIn("subsys/net/core/session/", config["memory_sensitive_paths"])
 
     def test_subsystem_scope_filters_changed_files(self):
         config = scan.default_scan_config("subsys/net")
@@ -63,29 +60,14 @@ class CImpactScanTests(unittest.TestCase):
         self.assertTrue(legacy_file["is_legacy_path"])
         self.assertTrue(platform_file["is_high_risk_path"])
 
-    def test_memory_lifetime_change_scores_high_and_requires_review(self):
-        config = scan.default_scan_config()
-        config["memory_sensitive_paths"].append("core/session/")
-        symbol = scan.changed_symbol(
-            "session_alloc",
-            "core/session/session.c",
-            "memory-lifetime",
-            "ctx = malloc(sizeof(*ctx));",
-        )
-
-        score, reasons = scan.score_symbol(symbol, None, config)
-
-        self.assertGreaterEqual(score, 8)
-        self.assertTrue(any("memory" in reason.lower() for reason in reasons))
-
     def test_legacy_reference_increases_symbol_risk(self):
         config = scan.default_scan_config()
         config["legacy_paths"].append("legacy/http/")
         symbol = scan.changed_symbol(
             "api_open",
             "common/api/session.h",
-            "callback-or-function-pointer",
-            "ops->api_open = api_open;",
+            "changed-token",
+            "api_open(ctx);",
         )
         refs = scan.reference_result("api_open", "codegraph", ["legacy/http/client.c", "new/feature.c"])
 
@@ -116,11 +98,11 @@ class CImpactScanTests(unittest.TestCase):
         risks = [
             scan.risk_item(
                 "api_open",
-                "function",
+                "changed-token",
                 12,
-                ["referenced by 1 legacy files"],
+                ["referenced by 1 legacy feature files"],
                 ["subsys/net/include/api.h", "subsys/net/legacy/client.c"],
-                ["memory_leak"],
+                [],
             )
         ]
         impact_paths = scan.build_impact_paths(refs, config)
@@ -131,7 +113,6 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("subsys/net/include/api.h", analysis[0]["changed_files"])
         self.assertIn("subsys/net/legacy/client.c", analysis[0]["referenced_files"])
         self.assertIn("api_open", analysis[0]["symbols"])
-        self.assertIn("memory_leak", analysis[0]["risk_categories"])
         self.assertTrue(analysis[0]["legacy_hit"])
         self.assertTrue(any("direct changed file" in reason for reason in analysis[0]["why_impacted"]))
         self.assertTrue(any("legacy tests" in check for check in analysis[0]["suggested_checks"]))
@@ -149,8 +130,11 @@ class CImpactScanTests(unittest.TestCase):
         function_symbol = scan.changed_symbol("api_open", "include/api.h", "function", "int api_open(void);")
         type_symbol = scan.changed_symbol("api_msg", "include/api.h", "type", "struct api_msg { int code; };")
         semantic_symbol = scan.changed_symbol("api_check", "src/api.c", "function", "ret = NULL; size = 0; lock = 1;")
+        memory_symbol = scan.changed_symbol("malloc", "src/api.c", "memory-lifetime", "ctx = malloc(sizeof(*ctx));")
+        macro_symbol = scan.changed_symbol("CONFIG_X", "src/api.c", "macro-or-conditional", "#ifdef CONFIG_X")
+        callback_symbol = scan.changed_symbol("handler", "src/api.c", "callback-or-function-pointer", "ops->open = handler;")
 
-        for symbol in (function_symbol, type_symbol, semantic_symbol):
+        for symbol in (function_symbol, type_symbol, semantic_symbol, memory_symbol, macro_symbol, callback_symbol):
             score, reasons = scan.score_symbol(symbol, None, config)
             self.assertEqual(0, score)
             self.assertEqual([], reasons)
@@ -178,39 +162,27 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("Manual Review 层", report)
         self.assertIn("人工排查", report)
 
-    def test_detects_architecture_risk_categories_from_c_evidence(self):
-        cases = {
-            "memory_safety": "memcpy(dst, src, len + 1);",
-            "memory_leak": "ctx = malloc(sizeof(*ctx)); return -1;",
-            "concurrency": "pthread_mutex_unlock(&ctx->lock);",
-            "ownership_lifetime": "refcount_dec(&obj->refcnt); release(obj);",
-            "macro_config": "#ifdef CONFIG_FEATURE_X",
-            "protocol_compatibility": "msg->version = PROTOCOL_V2; opcode = CMD_OPEN;",
-            "state_machine_timing": "state = STATE_RETRY; timer_start(t, timeout);",
-            "callback_dispatch": "ops->open = handler; register_callback(cb);",
-            "performance_resource": "while (retry--) { socket_fd = open(path); }",
-            "security_boundary": "if (!auth_check(token)) return PERMISSION_DENIED;",
-        }
-
-        for expected, evidence in cases.items():
-            categories = scan.detect_risk_categories(evidence, "subsys/net/api.c", "function")
-            self.assertIn(expected, categories, evidence)
-
-    def test_architecture_categories_increase_score_and_review(self):
+    def test_broad_cross_subsystem_reference_increases_flow_score_and_review(self):
         config = scan.default_scan_config("subsys/net")
-        symbol = scan.changed_symbol(
-            "parse_packet",
-            "subsys/net/protocol/parser.c",
-            "function",
-            "memcpy(buf, pkt->payload, pkt->len); if (!auth_check(token)) return ERR_DENIED;",
+        symbol = scan.changed_symbol("route_order", "subsys/net/protocol/router.c", "changed-token", "route_order(ctx);")
+        refs = scan.reference_result(
+            "route_order",
+            "codegraph",
+            [
+                "subsys/net/legacy/client.c",
+                "subsys/net/service/a.c",
+                "subsys/storage/service/b.c",
+                "subsys/order/service/c.c",
+            ],
+            config,
         )
 
-        score, reasons = scan.score_symbol(symbol, None, config)
+        score, reasons = scan.score_symbol(symbol, refs, config)
         review = scan.manual_review_items([scan.risk_item("parse_packet", "function", score, reasons, ["subsys/net/protocol/parser.c"])])
 
         self.assertGreaterEqual(score, 8)
-        self.assertTrue(any("memory_safety" in reason for reason in reasons))
-        self.assertTrue(any("security_boundary" in reason for reason in reasons))
+        self.assertTrue(any("legacy feature" in reason for reason in reasons))
+        self.assertTrue(any("subsystems" in reason for reason in reasons))
         self.assertEqual("parse_packet", review[0]["subject"])
 
     def test_decodes_utf8_subprocess_output_without_gbk_locale(self):
