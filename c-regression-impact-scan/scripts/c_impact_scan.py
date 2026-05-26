@@ -36,17 +36,20 @@ CALLBACK_RE = re.compile(r"\b(callback|cb|ops|vtable|handler|hook)\b|(?:\*\s*[A-
 GLOBAL_RE = re.compile(r"^\s*(?:extern\s+)?[A-Za-z_][\w\s\*]*\s+[A-Za-z_]\w*(?:\s*=|\s*;)")
 MEMORY_RE = re.compile(
     r"\b(malloc|calloc|realloc|strdup|free|alloc|dealloc|release|destroy|cleanup|refcount|refcnt|retain|"
-    r"memcpy|memmove|memset|sizeof)\b",
+    r"memcpy|memmove|memset|sizeof|"
+    r"list_(add|add_tail|del|del_init|move|move_tail)|hlist_(add|del)|rb_(insert|erase|link)|"
+    r"tree_(insert|remove|erase|delete)|hash_(add|del|remove|insert)|queue_(push|pop|remove)|"
+    r"enqueue|dequeue|cache_(add|insert|remove|delete)|map_(put|insert|remove|erase))\b",
     re.I,
 )
 SEMANTIC_RE = re.compile(r"\b(return|NULL|nullptr|errno|error|goto|timeout|retry|len|length|size|owner|lock|unlock)\b", re.I)
 ARCH_RISK_PATTERNS = [
     ("memory_safety", re.compile(r"\b(memcpy|memmove|memset|strcpy|strncpy|strcat|sprintf|snprintf|overflow|underflow|bounds?|index|len|length|size)\b", re.I)),
-    ("memory_leak", re.compile(r"\b(malloc|calloc|realloc|strdup|free|release|destroy|cleanup|refcount|refcnt|retain|alloc|dealloc)\b", re.I)),
+    ("memory_leak", re.compile(r"\b(malloc|calloc|realloc|strdup|free|release|destroy|cleanup|refcount|refcnt|retain|alloc|dealloc|list_(add|add_tail|del|del_init)|hlist_(add|del)|rb_(insert|erase|link)|tree_(insert|remove|erase|delete)|hash_(add|del|remove|insert)|queue_(push|pop|remove)|enqueue|dequeue|cache_(add|insert|remove|delete)|map_(put|insert|remove|erase))\b", re.I)),
     ("abi_layout", re.compile(r"\b(struct|union|enum|typedef|sizeof|pragma\s+pack|packed|__attribute__|dllexport|visibility|export)\b", re.I)),
     ("concurrency", re.compile(r"\b(mutex|lock|unlock|spin|rwlock|atomic|thread|task|timer|interrupt|semaphore|sem_|wait|signal|pthread)\b", re.I)),
     ("error_handling", re.compile(r"\b(return|errno|error|err_|goto|fail|cleanup|NULL|nullptr|invalid|denied)\b", re.I)),
-    ("ownership_lifetime", re.compile(r"\b(owner|ownership|refcount|refcnt|retain|release|destroy|init|deinit|close|open|cleanup|lifetime)\b", re.I)),
+    ("ownership_lifetime", re.compile(r"\b(owner|ownership|refcount|refcnt|retain|release|destroy|init|deinit|close|open|cleanup|lifetime|list_(add|add_tail|del|del_init)|hlist_(add|del)|rb_(insert|erase|link)|tree_(insert|remove|erase|delete)|hash_(add|del|remove|insert)|queue_(push|pop|remove)|enqueue|dequeue|cache_(add|insert|remove|delete)|map_(put|insert|remove|erase))\b", re.I)),
     ("macro_config", re.compile(r"^\s*#\s*(define|if|ifdef|ifndef|elif|undef)\b|\b(CONFIG_|FEATURE_|ENABLE_|DISABLE_)\w*", re.I)),
     ("protocol_compatibility", re.compile(r"\b(protocol|version|endian|hton|ntoh|tlv|json|field|opcode|message|packet|frame|cmd_|schema)\b", re.I)),
     ("state_machine_timing", re.compile(r"\b(state|event|timer|timeout|retry|transition|start|stop|order|sequence|schedule|delay)\b", re.I)),
@@ -593,7 +596,10 @@ def score_symbol(symbol, refs, config=None):
         reasons.append("global data changed")
     elif symbol["kind"] == "memory-lifetime":
         score += 5
-        reasons.append("memory allocation/lifetime related change")
+        if re.search(r"\b(list_|hlist_|rb_|tree_|hash_|queue_|enqueue|dequeue|cache_|map_)", symbol.get("evidence", ""), re.I):
+            reasons.append("container ownership/lifetime related change")
+        else:
+            reasons.append("memory allocation/lifetime related change")
     for category in symbol.get("risk_categories", []):
         weight = ARCH_CATEGORY_WEIGHTS.get(category, 0)
         if weight:
@@ -999,7 +1005,8 @@ def markdown_report(
             [
                 "- 验证 allocation success/failure paths。",
                 "- 检查 early return 和 goto-error cleanup paths。",
-                "- 检查 ownership transfer、refcount balance 以及 legacy repeated-call paths。",
+                "- 检查 ownership transfer、refcount balance、container insert/remove balance 以及 legacy repeated-call paths。",
+                "- 重点检查 list/tree/hash/queue/map/cache 插入后，异常路径是否摘除或释放对象。",
             ]
         )
     else:

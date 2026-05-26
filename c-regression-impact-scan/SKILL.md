@@ -294,6 +294,9 @@ Confidence:
 - 调用者和被调用者之间的所有权转移
 - 引用计数递增和递减是否平衡
 - buffer resize 和 `realloc` 错误处理
+- 插入链表、树、hash、queue、map、cache 等容器后的 ownership 是否转移
+- 容器插入失败、重复插入、异常返回时是否摘除或释放
+- `list_add`, `list_del`, `rb_insert`, `rb_erase`, `hash_add`, `hash_del`, `queue_push`, `queue_remove`, `map_put`, `cache_insert` 等数据结构操作
 - callback 清理和模块卸载路径
 - 重复调用或长时间运行的老功能路径
 

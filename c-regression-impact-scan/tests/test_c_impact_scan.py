@@ -85,6 +85,22 @@ class CImpactScanTests(unittest.TestCase):
         self.assertGreaterEqual(score, 8)
         self.assertTrue(any("memory" in reason.lower() for reason in reasons))
 
+    def test_container_insert_change_is_memory_lifetime_risk(self):
+        symbol = scan.changed_symbol(
+            "list_add_tail",
+            "core/session/cache.c",
+            "function",
+            "list_add_tail(&ctx->node, &cache->active_list);",
+        )
+
+        categories = scan.detect_risk_categories(symbol["evidence"], symbol["file"], symbol["kind"])
+        score, reasons = scan.score_symbol(symbol, None, scan.default_scan_config())
+
+        self.assertIn("memory_leak", categories)
+        self.assertIn("ownership_lifetime", categories)
+        self.assertGreaterEqual(score, 8)
+        self.assertTrue(any("container" in reason.lower() or "memory" in reason.lower() for reason in reasons))
+
     def test_legacy_reference_increases_symbol_risk(self):
         config = scan.default_scan_config()
         config["legacy_paths"].append("legacy/http/")

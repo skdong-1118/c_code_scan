@@ -345,10 +345,16 @@ subsys/net/include/
 - 所有权转移
 - init / destroy 顺序
 - 错误路径释放逻辑
+- 插入链表、树、hash、queue、map、cache 等数据结构
+- `list_add` / `list_del`
+- `rb_insert` / `rb_erase`
+- `hash_add` / `hash_del`
+- `queue_push` / `queue_remove`
+- `map_put` / `cache_insert`
 
 风险原因：
 
-长期运行的老功能、循环调用路径和异常路径更容易暴露泄漏、引用计数不平衡或释放顺序问题。
+长期运行的老功能、循环调用路径和异常路径更容易暴露泄漏、引用计数不平衡或释放顺序问题。对象插入容器后通常发生 ownership 转移，如果异常路径没有从容器摘除、重复插入未处理、销毁路径没有遍历释放，也会造成泄漏。
 
 ### 并发和锁
 
