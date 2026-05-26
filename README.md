@@ -150,7 +150,18 @@ codegraph init -i
 
 ## 推荐分步流程
 
-内网模型能力较弱或仓库较大时，推荐使用 guided workflow。它把一次完整分析拆成 scope discovery、triage、focused expansion、report 四步，避免模型一次性消化过多上下文。
+内网模型能力较弱或仓库较大时，推荐使用 interactive guided workflow。它把一次完整分析拆成 scope discovery、triage、focused expansion、report 四步，避免模型一次性消化过多上下文。
+
+默认交互规则：
+
+- 用户只说“分析最近一次修改对已有功能的影响”时，默认走交互式分步流程。
+- Step 0 收集关注重点后，不能直接跑完整分析。
+- Step 1 `discover` 完成后，Claude Code 应该展示变更范围摘要，并等待你确认扫描范围。
+- Step 2 `triage` 完成后，Claude Code 应该展示风险数量和 expansion candidates，并等待你确认是否继续。
+- Step 3 `expand` 完成后，Claude Code 应该展示 CodeGraph/rg 命中和 reference evidence，并等待你确认是否生成报告。
+- Step 5 `report` 完成后，才算最终完成，必须生成 `.impact-scan/risk_report.md`。
+
+只有当你明确说“直接生成报告”、“全自动”、“不用确认”、“one-shot” 或用于 CI 时，才允许跳过中间确认。
 
 ```powershell
 python .claude\skills\c-regression-impact-scan\scripts\c_impact_scan.py --step discover --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer

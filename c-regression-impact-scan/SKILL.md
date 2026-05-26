@@ -29,9 +29,34 @@ The final deliverable is always a Markdown file on disk:
 
 Do not treat a terminal/chat summary as completion. Even when using guided mode, the agent must run the report step or one-shot scanner before the final reply. The final reply should mention the generated file path and a short summary only after `.impact-scan/risk_report.md` exists.
 
+## Interaction Contract
+
+Default behavior is **interactive guided mode**. After each scanner step, the agent must stop and wait for the user's confirmation before running the next step.
+
+The agent may skip checkpoints only when the user clearly says one of:
+
+- `直接生成报告`
+- `不用确认`
+- `全自动`
+- `one-shot`
+- `CI`
+
+If the user's request is simply "分析最近一次修改对已有功能的影响", that means guided mode, not one-shot mode.
+
+Checkpoint rule:
+
+- Step 0 asks for focus and waits for the user's answer.
+- Step 1 runs `discover`, summarizes scope, then waits for confirmation.
+- Step 2 runs `triage`, summarizes risk counts and expansion candidates, then waits for confirmation.
+- Step 3 runs `expand`, summarizes reference evidence and CodeGraph/rg status, then waits for confirmation.
+- Step 4 summarizes key evidence and waits for confirmation before final report.
+- Step 5 runs `report`, verifies `.impact-scan/risk_report.md`, then replies with the path and short summary.
+
+Do not run Step 1 through Step 5 in one uninterrupted sequence in guided mode.
+
 ## Two Modes
 
-### Default: Guided Mode (multi-step)
+### Default: Interactive Guided Mode (multi-step)
 
 Best for interactive use with a local agent. The agent walks through each step with user confirmation at key checkpoints:
 
@@ -188,7 +213,7 @@ Before generating the final report, present key findings for user confirmation:
 
 This step is critical for weak models — project knowledge lives with the user, not the agent.
 
-If the user already asked to analyze the latest change and did not explicitly ask to pause for confirmation, continue to Step 5 after presenting the key evidence. Do not stop at a terminal/chat summary.
+Stop here and wait for the user's confirmation unless the user explicitly selected one-shot/full-auto mode. Do not continue to Step 5 automatically in interactive guided mode.
 
 ### Step 5: Final Report (生成最终报告)
 
@@ -398,14 +423,15 @@ Use evidence-backed language. When confidence is low, state why:
 
 ## Agent Guidance
 
-1. Collect user focus first (Step 0) — don't skip this.
-2. Run `--step discover` and confirm scope with user.
-3. Run `--step triage` for quick risk scoring.
-4. Run `--step expand` for focused reference search.
-5. Present key evidence for user confirmation (Step 4), but continue if the user asked for a complete analysis and did not ask to pause.
-6. Run `--step report` to generate the final Markdown.
-7. Verify `.impact-scan/risk_report.md` exists. If it does not exist, run one-shot mode as fallback.
-8. Read `.impact-scan/risk_report.md` and summarize for the user.
+1. Determine mode first. Default to interactive guided mode unless the user explicitly asks for one-shot/full-auto mode.
+2. Collect user focus first (Step 0) and wait for the user's answer.
+3. Run `--step discover`, summarize scope, then stop and ask whether to continue or adjust subsystem/focus.
+4. Only after confirmation, run `--step triage`, summarize risk counts and expansion candidates, then stop and ask whether to continue.
+5. Only after confirmation, run `--step expand`, summarize reference evidence and CodeGraph/rg status, then stop and ask whether to continue.
+6. Only after confirmation, present key evidence for review (Step 4), then stop and ask whether to generate the final report.
+7. Only after confirmation, run `--step report` to generate the final Markdown.
+8. Verify `.impact-scan/risk_report.md` exists. If it does not exist, run one-shot mode as fallback.
+9. Read `.impact-scan/risk_report.md` and summarize for the user.
 
 Completion rule:
 
