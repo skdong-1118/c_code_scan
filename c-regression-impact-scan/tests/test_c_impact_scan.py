@@ -24,6 +24,8 @@ class CImpactScanTests(unittest.TestCase):
                         "  - legacy/",
                         "high_risk_paths:",
                         "  - platform/",
+                        "memory_sensitive_paths:",
+                        "  - core/session/",
                     ]
                 ),
                 encoding="utf-8",
@@ -34,6 +36,7 @@ class CImpactScanTests(unittest.TestCase):
         self.assertEqual("subsys/net", config["scope_path"])
         self.assertIn("subsys/net/legacy/", config["legacy_paths"])
         self.assertIn("subsys/net/platform/", config["high_risk_paths"])
+        self.assertIn("subsys/net/core/session/", config["memory_sensitive_paths"])
 
     def test_subsystem_scope_filters_changed_files(self):
         config = scan.default_scan_config("subsys/net")
@@ -59,6 +62,23 @@ class CImpactScanTests(unittest.TestCase):
 
         self.assertTrue(legacy_file["is_legacy_path"])
         self.assertTrue(platform_file["is_high_risk_path"])
+
+    def test_memory_leak_change_scores_high_and_requires_review(self):
+        config = scan.default_scan_config()
+        config["memory_sensitive_paths"].append("core/session/")
+        symbol = scan.changed_symbol(
+            "malloc",
+            "core/session/session.c",
+            "memory-lifetime",
+            "ctx = malloc(sizeof(*ctx));",
+        )
+
+        score, reasons = scan.score_symbol(symbol, None, config)
+        review = scan.manual_review_items([scan.risk_item("malloc", "memory-lifetime", score, reasons, ["core/session/session.c"])])
+
+        self.assertGreaterEqual(score, 8)
+        self.assertTrue(any("memory leak" in reason.lower() for reason in reasons))
+        self.assertEqual("malloc", review[0]["subject"])
 
     def test_legacy_reference_increases_symbol_risk(self):
         config = scan.default_scan_config()
@@ -130,11 +150,10 @@ class CImpactScanTests(unittest.TestCase):
         function_symbol = scan.changed_symbol("api_open", "include/api.h", "function", "int api_open(void);")
         type_symbol = scan.changed_symbol("api_msg", "include/api.h", "type", "struct api_msg { int code; };")
         semantic_symbol = scan.changed_symbol("api_check", "src/api.c", "function", "ret = NULL; size = 0; lock = 1;")
-        memory_symbol = scan.changed_symbol("malloc", "src/api.c", "memory-lifetime", "ctx = malloc(sizeof(*ctx));")
         macro_symbol = scan.changed_symbol("CONFIG_X", "src/api.c", "macro-or-conditional", "#ifdef CONFIG_X")
         callback_symbol = scan.changed_symbol("handler", "src/api.c", "callback-or-function-pointer", "ops->open = handler;")
 
-        for symbol in (function_symbol, type_symbol, semantic_symbol, memory_symbol, macro_symbol, callback_symbol):
+        for symbol in (function_symbol, type_symbol, semantic_symbol, macro_symbol, callback_symbol):
             score, reasons = scan.score_symbol(symbol, None, config)
             self.assertEqual(0, score)
             self.assertEqual([], reasons)

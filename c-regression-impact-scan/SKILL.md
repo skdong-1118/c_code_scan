@@ -1,6 +1,6 @@
 ---
 name: c-regression-impact-scan
-description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, architecture flow, business flow, cross-subsystem behavior, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", or "分析这个子系统最近修改的影响". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic flow-impact rules. The final deliverable must be a Chinese Markdown detection report.
+description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, architecture flow, business flow, cross-subsystem behavior, memory leaks, ownership/lifetime, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic flow-impact plus memory-leak rules. The final deliverable must be a Chinese Markdown detection report.
 ---
 
 # C Regression Impact Scan
@@ -61,6 +61,7 @@ The target environment is a large commercial C codebase, usually intranet-only, 
    - affected legacy subsystem candidates, with per-subsystem impact reason, changed files, referenced files, changed tokens, and suggested checks
    - evidence paths from changed item to references
    - architecture flow-impact findings
+   - memory leak and ownership-lifetime findings
    - mandatory manual-review items
    - suggested regression tests
    - scan limitations and confidence
@@ -94,6 +95,10 @@ high_risk_paths:
   - protocol/
   - storage/
   - upgrade/
+memory_sensitive_paths:
+  - core/session/
+  - buffer/
+  - memory/
 low_risk_paths:
   - tests/
   - docs/
@@ -192,6 +197,7 @@ When static evidence is incomplete, write the item into the Markdown report unde
 - changed token crosses multiple subsystems
 - impact path reaches an old feature flow or compatibility flow
 - CodeGraph is unavailable or has sparse results
+- memory-lifetime evidence appears in changed lines
 
 For each Manual Review item, include the subject, kind, level, reasons, evidence files when available, and what the engineer should verify. The purpose is to reduce manual review scope, not to replace the architect's judgment.
 
@@ -205,6 +211,8 @@ Use deterministic flow-impact scoring before model reasoning. Treat these as def
 - changed token referenced by 10 or more files: +3
 - changed token referenced across 3 or more top-level subsystems: +3
 - large change size: +2
+- memory leak or ownership-lifetime related change: +5
+- memory-sensitive path on memory-lifetime change: +3
 
 Risk level:
 
@@ -228,7 +236,18 @@ Confidence:
 - changed token 引用范围很广
 - changed token 跨多个 subsystem
 - Impact Paths 到达老功能、稳定功能或兼容流程
+- memory-lifetime changed token，例如 `malloc`, `calloc`, `realloc`, `strdup`, `free`, `release`, `destroy`, `cleanup`, `refcount`
 - CodeGraph 不可用或结果稀疏，需要降低 confidence
+
+## Memory Leak Focus
+
+内存泄漏作为唯一保留的 C 语言专项风险。发现 `memory-lifetime` changed token 时，报告必须包含 `内存泄漏关注点`，并要求验证：
+
+- allocation/free 是否成对
+- ownership transfer 是否清晰
+- cleanup paths 是否覆盖异常路径
+- refcount increment/decrement 是否平衡
+- legacy repeated-call paths 是否存在累积泄漏风险
 
 ## Report Style
 
@@ -244,6 +263,7 @@ Keep these sections unless there is a strong reason to add more:
 - `Reference Evidence`
 - `Impact Paths`
 - `必须人工 Review`
+- `内存泄漏关注点`
 - `建议回归检查`
 - `局限性`
 

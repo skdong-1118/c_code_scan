@@ -19,6 +19,10 @@ from pathlib import Path
 C_FILE_RE = re.compile(r"\.(c|h)$", re.I)
 HEADER_RE = re.compile(r"\.h$", re.I)
 IDENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+MEMORY_RE = re.compile(
+    r"\b(malloc|calloc|realloc|strdup|free|alloc|dealloc|release|destroy|cleanup|refcount|refcnt|retain)\b",
+    re.I,
+)
 SYMBOL_STOPWORDS = set(
     [
         "if",
@@ -48,6 +52,8 @@ SYMBOL_STOPWORDS = set(
 
 
 def detect_risk_categories(evidence, file_path, kind):
+    if kind == "memory-lifetime":
+        return ["memory_leak", "ownership_lifetime"]
     return []
 
 
@@ -70,6 +76,7 @@ def default_scan_config(scope_path=None):
         "scope_path": scope_path,
         "legacy_paths": [scoped_prefix(scope_path, p) for p in ["legacy/", "old/", "stable/"]],
         "high_risk_paths": [scoped_prefix(scope_path, p) for p in ["platform/", "protocol/", "storage/", "upgrade/", "adapter/", "common/"]],
+        "memory_sensitive_paths": [scoped_prefix(scope_path, p) for p in ["memory/", "mem/", "buffer/", "session/", "core/"]],
         "low_risk_paths": [scoped_prefix(scope_path, p) for p in ["test/", "tests/", "doc/", "docs/"]],
         "subsystems": {},
     }
@@ -109,6 +116,7 @@ def load_scan_config(repo, scope_path=None):
     for key in (
         "legacy_paths",
         "high_risk_paths",
+        "memory_sensitive_paths",
         "low_risk_paths",
     ):
         values = loaded.get(key)
@@ -159,7 +167,7 @@ def apply_config_to_file(item, config):
     item["is_public_interface"] = False
     item["is_legacy_path"] = path_matches_prefix(item["path"], config["legacy_paths"])
     item["is_high_risk_path"] = path_matches_prefix(item["path"], config["high_risk_paths"])
-    item["is_memory_sensitive_path"] = False
+    item["is_memory_sensitive_path"] = path_matches_prefix(item["path"], config["memory_sensitive_paths"])
     item["is_low_risk_path"] = path_matches_prefix(item["path"], config["low_risk_paths"])
     item["subsystem"] = configured_subsystem_for(item["path"], config)
     return item
@@ -353,6 +361,8 @@ def extract_symbols(repo, commit_range, max_symbols, config=None):
 
         kind = "changed-token"
         name = ""
+        if MEMORY_RE.search(stripped):
+            kind = "memory-lifetime"
         ids = [token for token in IDENT_RE.findall(stripped) if token not in SYMBOL_STOPWORDS]
         for token in ids:
             if len(token) >= 4:
@@ -497,6 +507,12 @@ def score_symbol(symbol, refs, config=None):
     if config and path_matches_prefix(symbol["file"], config["high_risk_paths"]):
         score += 4
         reasons.append("changed token is in architecture flow path")
+    if symbol["kind"] == "memory-lifetime":
+        score += 5
+        reasons.append("memory leak or ownership-lifetime related change")
+        if config and path_matches_prefix(symbol["file"], config["memory_sensitive_paths"]):
+            score += 3
+            reasons.append("memory-sensitive path changed")
     if refs:
         legacy_file_count = refs.get("legacy_file_count", 0)
         if config and not legacy_file_count:
@@ -599,6 +615,8 @@ def checks_for_categories(categories, legacy_hit):
     checks = []
     if legacy_hit:
         checks.append("运行该 subsystem 的 legacy tests，重点验证老功能路径和兼容行为。")
+    if "memory_leak" in categories or "ownership_lifetime" in categories:
+        checks.append("执行 memory leak 专项检查，覆盖 allocation/free、ownership transfer、refcount 和 cleanup paths。")
     if not checks:
         checks.append("按业务流程入口验证 changed files 和 referenced files 覆盖到的功能路径。")
     return checks
@@ -630,6 +648,8 @@ def build_subsystem_analysis(files, refs, risks, impact_paths, config):
         entry["why_impacted"].append("本次提交直接修改了该 subsystem 内文件 (direct changed file)")
         if item.get("is_high_risk_path"):
             entry["why_impacted"].append("修改了 architecture flow path，需要关注跨模块功能流程")
+        if item.get("is_memory_sensitive_path"):
+            entry["why_impacted"].append("修改了 memory-sensitive path，需要关注 memory leak 和 ownership-lifetime")
         if item.get("is_legacy_path"):
             entry["legacy_hit"] = True
             entry["why_impacted"].append("直接修改 legacy path，老功能行为可能被改变")
@@ -705,6 +725,8 @@ def manual_review_items(risks):
         "cross-subsystem flow impact",
         "broad flow impact",
         "architecture flow path",
+        "memory leak",
+        "ownership-lifetime",
     )
     for item in risks:
         reasons = "; ".join(item["reasons"])
@@ -844,18 +866,34 @@ def markdown_report(
     else:
         lines.append("- deterministic rules 未发现必须人工 Review 的项目。")
 
+    memory_items = [item for item in risks if item["kind"] == "memory-lifetime"]
+    lines.extend(["", "## 内存泄漏关注点", ""])
+    if memory_items:
+        for item in memory_items[:20]:
+            lines.append("- `{}`: {}".format(item["subject"], "; ".join(item["reasons"])))
+        lines.extend(
+            [
+                "- 检查 allocation/free 是否成对。",
+                "- 检查 ownership transfer 和 cleanup paths。",
+                "- 对 legacy repeated-call paths 做定向压力循环和进程内存监控。",
+            ]
+        )
+    else:
+        lines.append("- deterministic rules 未发现 memory-lifetime 类型的 changed token。")
+
     lines.extend(
         [
             "",
             "## 建议回归检查",
             "- 针对受影响 subsystem 候选运行 legacy tests。",
             "- 按 Impact Paths 回放关键业务流程，确认入口、出口、异常分支和兼容路径。",
+            "- 对 memory-lifetime 变更执行 memory leak 专项检查。",
             "- 对引用范围较广的 changed token，每个受影响 subsystem 至少验证一条 legacy feature path。",
             "- 对跨 subsystem 的影响链路，补充端到端功能场景或接口联调验证。",
             "",
             "## 局限性",
             "- 这是 regression risk triage scan，不是 compatibility proof。",
-            "- 当前版本聚焦架构流程和功能影响，不做 C 语言语法级 memory、macro、concurrency 等专项风险判断。",
+            "- 当前版本聚焦架构流程和功能影响，并仅保留 memory leak 作为 C 语言专项风险判断。",
             "- 如果 CodeGraph 索引不完整，reference 和 impact path 可能不完整。",
         ]
     )

@@ -95,6 +95,7 @@ C:\Users\<用户名>\.claude\skills\c-regression-impact-scan
 看这次改动是否有回归风险
 分析这个子系统最近修改的影响
 分析这个子系统最近修改是否影响老功能流程
+检查是否可能导致内存泄漏
 ```
 
 如果自动触发失败，可以显式指定：
@@ -169,6 +170,10 @@ high_risk_paths:
   - protocol/
   - storage/
   - upgrade/
+memory_sensitive_paths:
+  - core/session/
+  - buffer/
+  - memory/
 low_risk_paths:
   - tests/
   - docs/
@@ -243,6 +248,7 @@ subsys/net/include/
 - `Reference Evidence`
 - `Impact Paths`
 - `Must Review Manually`
+- `Memory Leak Focus`
 - `Suggested Regression Checks`
 - `Limitations`
 
@@ -253,6 +259,7 @@ subsys/net/include/
 - `CodeGraph 层`：查找 function/symbol reference、callers/callees、include/import 关系和 subsystem 影响面，提供 impact evidence。
 - `Heuristic 层`：根据 changed files、legacy paths、architecture flow paths、reference count 和 subsystem spread 识别流程影响信号，只作为 flow impact triage。
 - `Manual Review 层`：对跨 subsystem 流程、legacy feature path、异步/回调流程和人工业务路径确认项，输出到报告里的 `必须人工 Review`，让工程师按清单人工排查。
+- `Memory Leak 层`：作为唯一保留的 C 语言专项风险，检测 `malloc/free/release/destroy/cleanup/refcount` 等 memory-lifetime changed token，并输出 `内存泄漏关注点`。
 
 其中 `Affected Subsystem Candidates` 不只列出命中数量，还会按 subsystem 展开：
 
@@ -261,6 +268,7 @@ subsys/net/include/
 - `Referenced/impact files`：列出 CodeGraph 或 fallback 搜索命中的引用文件，用于定位老功能调用链。
 - `Symbols`：列出把本次修改与该 subsystem 关联起来的 changed token。
 - `Suggested checks`：给出该 subsystem 推荐的 legacy tests、business flow replay、跨 subsystem 联调等检查动作。
+- 如果命中 `memory-lifetime`，还会输出 memory leak 专项检查建议。
 
 弱模型或内网 Claude Code 可以优先读取 `.impact-scan/subsystem_analysis.json`，再把其中内容整理进最终 Markdown 报告。
 
@@ -314,6 +322,27 @@ subsys/net/include/
 
 引用范围越广，越需要用业务流程而不是单文件视角做评估。
 
+### Memory Leak Focus
+
+检查内容：
+
+- `malloc`
+- `calloc`
+- `realloc`
+- `strdup`
+- `free`
+- `release`
+- `destroy`
+- `cleanup`
+- `refcount` / `refcnt`
+- ownership transfer
+- cleanup paths
+- legacy repeated-call paths
+
+风险原因：
+
+内存泄漏是保留的唯一 C 语言专项风险。大型 C 工程的老功能路径通常长时间运行或重复调用，memory-lifetime 变化需要单独验证。
+
 ## 风险评分
 
 默认风险等级：
@@ -333,6 +362,8 @@ architecture flow path changed     +4
 broad reference impact             +3
 cross-subsystem flow impact        +3
 large change size                  +2
+memory leak / ownership-lifetime   +5
+memory-sensitive path boost        +3
 ```
 
 评分只是 triage 信号，不等价于已经证明存在缺陷。
@@ -367,7 +398,7 @@ codegraph impact --symbol <symbol>
 - 这是回归风险 triage 工具，不是兼容性证明工具。
 - CodeGraph 索引不完整时，Impact Paths 可能不完整。
 - 简单 YAML 解析器只支持顶层 list。
-- 当前版本聚焦架构流程和功能影响，不做 C 语言语法级 memory、macro、concurrency 等专项风险判断。
+- 当前版本聚焦架构流程和功能影响，并仅保留 memory leak 作为 C 语言专项风险判断。
 
 ## 开发验证
 
