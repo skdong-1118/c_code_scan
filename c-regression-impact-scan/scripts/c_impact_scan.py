@@ -283,18 +283,39 @@ def codegraph_status(mode):
     }
 
 
+def decode_process_output(data):
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    for encoding in ("utf-8-sig", "utf-8", "gbk", "mbcs"):
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            pass
+    return data.decode("utf-8", errors="replace")
+
+
 def run(args, cwd, check=True):
     try:
-        return subprocess.run(
+        completed = subprocess.run(
             args,
             cwd=str(cwd),
-            universal_newlines=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=check,
+            check=False,
         )
     except FileNotFoundError:
         raise RuntimeError("missing command: {}".format(args[0]))
+    result = subprocess.CompletedProcess(
+        completed.args,
+        completed.returncode,
+        decode_process_output(completed.stdout),
+        decode_process_output(completed.stderr),
+    )
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, result.args, output=result.stdout, stderr=result.stderr)
+    return result
 
 
 def git(args, cwd):
@@ -447,14 +468,7 @@ def prepare_codegraph(repo, mode, init_codegraph):
     ]
     any_success = False
     for command in init_commands:
-        result = subprocess.run(
-            command,
-            cwd=str(repo),
-            universal_newlines=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        result = run(command, repo, check=False)
         if result.returncode == 0:
             any_success = True
         elif result.stderr.strip():
@@ -474,14 +488,7 @@ def run_codegraph_impact(repo, symbol, limit, status):
         [status["executable"], "impact", "--symbol", symbol],
     ]
     for command in commands:
-        result = subprocess.run(
-            command,
-            cwd=str(repo),
-            universal_newlines=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        result = run(command, repo, check=False)
         if result.returncode == 0 and result.stdout.strip():
             return extract_paths_from_text(result.stdout, limit)
     return []
@@ -505,12 +512,9 @@ def rg_references(repo, symbol, limit):
     if not exe:
         return []
     pattern = r"\b{}\b".format(re.escape(symbol))
-    result = subprocess.run(
+    result = run(
         [exe, "--files-with-matches", "--glob", "*.c", "--glob", "*.h", pattern, "."],
-        cwd=str(repo),
-        universal_newlines=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        repo,
         check=False,
     )
     paths = []
@@ -712,6 +716,10 @@ def write_json(path, data):
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def write_markdown_report(path, text):
+    path.write_text(text, encoding="utf-8-sig")
+
+
 def manual_review_items(risks):
     review = []
     keywords = (
@@ -909,9 +917,9 @@ def main():
     write_json(out / "architecture_risk_summary.json", arch_summary)
     write_json(out / "manual_review.json", manual_review_items(risks))
     write_json(out / "subsystem_impact.json", subsystems)
-    (out / "risk_report.md").write_text(
+    write_markdown_report(
+        out / "risk_report.md",
         markdown_report(args.range, codegraph, files, symbols, refs, risks, subsystems, config, impact_paths, arch_summary),
-        encoding="utf-8",
     )
 
     print("wrote {}".format(out / "risk_report.md"))

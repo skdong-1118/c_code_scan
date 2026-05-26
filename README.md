@@ -231,6 +231,12 @@ subsys/net/include/
 .impact-scan/risk_report.md
 ```
 
+编码说明：
+
+- `risk_report.md` 使用 `UTF-8 with BOM` 写入，便于 Windows 记事本、部分旧版编辑器和内网工具正确识别中文。
+- JSON 中间文件仍使用标准 UTF-8。
+- 脚本调用 Git、CodeGraph、rg 等子进程时，会优先按 UTF-8 解码输出，再做宽容降级，避免 Windows 默认 GBK 解码触发 `UnicodeDecodeError`。
+
 ## Markdown 报告内容
 
 生成的检测报告通常包含：

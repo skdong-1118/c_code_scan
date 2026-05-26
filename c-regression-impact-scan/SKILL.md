@@ -66,6 +66,12 @@ The target environment is a large commercial C codebase, usually intranet-only, 
 
 The final deliverable is not just a chat summary. It must be a Chinese Markdown report file, normally `.impact-scan/risk_report.md`.
 
+Encoding requirements:
+
+- The Chinese Markdown report must be written as UTF-8 with BOM to reduce garbled text in Windows viewers.
+- JSON artifacts remain standard UTF-8.
+- Subprocess output from Git, CodeGraph, and rg must be decoded as UTF-8 first with tolerant fallback, avoiding Windows GBK `UnicodeDecodeError` failures.
+
 ## Subsystem Configuration
 
 For better legacy-impact results, add `.impact-scan.yml` inside the subsystem directory, not the repository root. The parser is intentionally simple for Python 3.6 and offline Windows environments; use top-level list keys:

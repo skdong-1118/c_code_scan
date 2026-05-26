@@ -1,4 +1,5 @@
 import importlib.util
+import codecs
 import tempfile
 import unittest
 from pathlib import Path
@@ -144,6 +145,24 @@ class CImpactScanTests(unittest.TestCase):
         self.assertTrue(any("memory_safety" in reason for reason in reasons))
         self.assertTrue(any("security_boundary" in reason for reason in reasons))
         self.assertEqual("parse_packet", review[0]["subject"])
+
+    def test_decodes_utf8_subprocess_output_without_gbk_locale(self):
+        raw = "中文路径/模块.c -> €\n".encode("utf-8")
+
+        decoded = scan.decode_process_output(raw)
+
+        self.assertIn("中文路径/模块.c", decoded)
+        self.assertIn("€", decoded)
+
+    def test_markdown_report_is_written_with_utf8_bom_for_windows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "risk_report.md"
+
+            scan.write_markdown_report(path, "# 中文报告\n")
+
+            raw = path.read_bytes()
+        self.assertTrue(raw.startswith(codecs.BOM_UTF8))
+        self.assertEqual("# 中文报告\n", raw.decode("utf-8-sig"))
 
 
 if __name__ == "__main__":
