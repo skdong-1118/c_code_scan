@@ -255,14 +255,16 @@ Confidence:
 
 ## Report Style
 
-The output report must be Chinese Markdown. Keep these sections unless there is a strong reason to add more:
+The output report must be Chinese Markdown, but technical terms should stay in English when that is clearer. Prefer mixed wording such as `changed symbols`, `subsystem`, `legacy path`, `memory-lifetime`, `ABI`, `callback`, `dispatch table`, `compile database`, and `CodeGraph`.
+
+Keep these sections unless there is a strong reason to add more:
 
 - `概要`
 - `高/中风险项`
 - `架构风险类别`
-- `受影响子系统候选`
-- `引用证据`
-- `影响路径`
+- `受影响 subsystem 候选`
+- `Reference Evidence`
+- `Impact Paths`
 - `必须人工 Review`
 - `内存泄漏关注点`
 - `建议回归检查`

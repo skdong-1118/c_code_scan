@@ -252,6 +252,8 @@ subsys/net/include/
 - `Suggested Regression Checks`
 - `Limitations`
 
+报告语言风格为中文描述为主，但专业术语保留英文，例如 `changed symbols`、`subsystem`、`legacy path`、`memory-lifetime`、`ABI`、`callback`、`dispatch table`、`compile database`、`CodeGraph`。这样便于工程团队阅读，也避免强行翻译造成歧义。
+
 ## 检查项说明
 
 ### 公共接口变化

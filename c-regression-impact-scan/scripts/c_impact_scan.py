@@ -747,22 +747,22 @@ def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsys
         "# C 回归影响扫描报告",
         "",
         "## 概要",
-        "- 扫描范围: `{}`".format(commit_range),
-        "- 总体风险: **{}**".format(top_level),
-        "- 最高分: {}".format(max_score),
-        "- 置信度: **{}**".format(confidence),
+        "- Scan range: `{}`".format(commit_range),
+        "- Overall risk: **{}**".format(top_level),
+        "- Max score: {}".format(max_score),
+        "- Confidence: **{}**".format(confidence),
         "- CodeGraph 模式: `{}`".format(codegraph["mode"]),
         "- CodeGraph 可用: {}".format("是" if codegraph["available"] else "否"),
-        "- CodeGraph 命中的符号数: {}".format(codegraph["used_for_symbols"]),
-        "- 兜底搜索命中的符号数: {}".format(codegraph["fallback_used_for_symbols"]),
-        "- 变更文件数: {}".format(len(files)),
-        "- 识别到的变更符号数: {}".format(len(symbols)),
-        "- 公共接口路径: {}".format(", ".join(config["public_interfaces"][:8])),
-        "- 老功能路径: {}".format(", ".join(config["legacy_paths"][:8])),
+        "- CodeGraph 命中的 symbol 数: {}".format(codegraph["used_for_symbols"]),
+        "- fallback 命中的 symbol 数: {}".format(codegraph["fallback_used_for_symbols"]),
+        "- changed files: {}".format(len(files)),
+        "- changed symbols: {}".format(len(symbols)),
+        "- public interface paths: {}".format(", ".join(config["public_interfaces"][:8])),
+        "- legacy paths: {}".format(", ".join(config["legacy_paths"][:8])),
         "",
         "## 高/中风险项",
         "",
-        "| 对象 | 类型 | 分数 | 等级 | 原因 |",
+        "| Subject | Kind | Score | Level | Reasons |",
         "|---|---|---:|---|---|",
     ]
     for item in risks[:30]:
@@ -775,11 +775,11 @@ def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsys
             )
         )
     if all(item["level"] == "low" for item in risks):
-        lines.append("| 未发现 | - | 0 | low | 未命中确定性高风险规则 |")
+        lines.append("| 未发现 | - | 0 | low | 未命中 deterministic high-risk rule |")
 
     lines.extend(["", "## 架构风险类别", ""])
     if arch_summary:
-        lines.extend(["| 类别 | 数量 | 最高分 | 示例对象 |", "|---|---:|---:|---|"])
+        lines.extend(["| Category | Count | Max Score | Example Subjects |", "|---|---:|---:|---|"])
         for item in arch_summary:
             lines.append(
                 "| `{}` | {} | {} | {} |".format(
@@ -787,34 +787,34 @@ def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsys
                 )
             )
     else:
-        lines.append("- 未检测到架构专项风险类别。")
+        lines.append("- 未检测到 architecture-specific risk category。")
 
-    lines.extend(["", "## 受影响子系统候选", ""])
+    lines.extend(["", "## 受影响 subsystem 候选", ""])
     for sub in subsystems.get("subsystems", [])[:20]:
-        lines.append("- `{}`: {} 条证据命中".format(sub["name"], sub["count"]))
+        lines.append("- `{}`: {} 条 evidence 命中".format(sub["name"], sub["count"]))
 
-    lines.extend(["", "## 引用证据", ""])
+    lines.extend(["", "## Reference Evidence", ""])
     for ref in refs[:30]:
         if not ref["files"]:
             continue
         sample = ", ".join("`{}`".format(p) for p in ref["files"][:8])
         lines.append(
-            "- `{}` 通过 {} 命中: {} 个文件，{} 个子系统。{}".format(
+            "- `{}` via {}: {} files, {} subsystems. {}".format(
                 ref["symbol"], ref["backend"], ref["file_count"], ref["subsystem_count"], sample
             )
         )
 
-    lines.extend(["", "## 影响路径", ""])
+    lines.extend(["", "## Impact Paths", ""])
     if impact_paths:
         for path in impact_paths[:30]:
-            legacy = "老功能路径" if path["is_legacy"] else "非老功能路径"
+            legacy = "legacy path" if path["is_legacy"] else "non-legacy path"
             lines.append(
                 "- `{}` -> `{}` -> `{}` ({})".format(
                     path["symbol"], path["target_file"], path["subsystem"], legacy
                 )
             )
     else:
-        lines.append("- 未发现符号到文件的影响路径。")
+        lines.append("- 未发现 symbol-to-file impact path。")
 
     review = manual_review_items(risks)
     lines.extend(["", "## 必须人工 Review", ""])
@@ -822,7 +822,7 @@ def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsys
         for item in review:
             lines.append("- `{}` ({}, {}): {}".format(item["subject"], item["kind"], item["level"], "; ".join(item["reasons"])))
     else:
-        lines.append("- 确定性规则未发现必须人工 Review 的项目。")
+        lines.append("- deterministic rules 未发现必须人工 Review 的项目。")
 
     memory_items = [item for item in risks if item["kind"] == "memory-lifetime"]
     lines.extend(["", "## 内存泄漏关注点", ""])
@@ -831,28 +831,28 @@ def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsys
             lines.append("- `{}`: {}".format(item["subject"], "; ".join(item["reasons"])))
         lines.extend(
             [
-                "- 验证内存分配成功和失败路径。",
-                "- 检查提前 return 和 goto-error 清理路径。",
-                "- 检查所有权转移、引用计数平衡以及老功能重复调用路径。",
+                "- 验证 allocation success/failure paths。",
+                "- 检查 early return 和 goto-error cleanup paths。",
+                "- 检查 ownership transfer、refcount balance 以及 legacy repeated-call paths。",
             ]
         )
     else:
-        lines.append("- 确定性规则未发现 memory-lifetime 类型的变更符号。")
+        lines.append("- deterministic rules 未发现 memory-lifetime 类型的 changed symbol。")
 
     lines.extend(
         [
             "",
             "## 建议回归检查",
-            "- Review 上方列出的高风险公共头文件和共享模块。",
-            "- 针对受影响子系统候选运行老功能测试。",
-            "- 人工检查结构体布局、枚举值、宏、回调和函数指针表。",
+            "- Review 上方列出的 high-risk public headers 和 shared modules。",
+            "- 针对受影响 subsystem 候选运行 legacy tests。",
+            "- 人工检查 struct layout、enum values、macros、callbacks 和 function pointer tables。",
             "- 对 memory-lifetime 变更执行内存泄漏专项检查，尤其关注分配/释放和错误路径。",
-            "- 对引用范围较广的符号，每个受影响子系统至少验证一条老功能路径。",
+            "- 对引用范围较广的 symbol，每个受影响 subsystem 至少验证一条 legacy feature path。",
             "",
             "## 局限性",
-            "- 这是回归风险 triage 扫描，不是兼容性证明。",
-            "- 如果没有 compile database 或语义级 C 索引，宏展开和条件编译路径可能不完整。",
-            "- 除非 CodeGraph 本地索引捕获了函数指针和回调关系，否则相关判断属于启发式分析。",
+            "- 这是 regression risk triage scan，不是 compatibility proof。",
+            "- 如果没有 compile database 或 semantic C index，macro expansion 和 conditional compilation paths 可能不完整。",
+            "- 除非 CodeGraph 本地索引捕获了 function pointer 和 callback 关系，否则相关判断属于 heuristic analysis。",
         ]
     )
     if codegraph["errors"]:
