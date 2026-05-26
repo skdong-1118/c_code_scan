@@ -19,6 +19,16 @@ This is a **guided workflow skill** — the agent collects user focus, runs dete
 
 The model orchestrates the steps. The Python scanner produces evidence. Deterministic rules produce scores. A template produces the final report. The model only summarizes and confirms.
 
+## Non-Negotiable Deliverable
+
+The final deliverable is always a Markdown file on disk:
+
+```
+.impact-scan/risk_report.md
+```
+
+Do not treat a terminal/chat summary as completion. Even when using guided mode, the agent must run the report step or one-shot scanner before the final reply. The final reply should mention the generated file path and a short summary only after `.impact-scan/risk_report.md` exists.
+
 ## Two Modes
 
 ### Default: Guided Mode (multi-step)
@@ -177,6 +187,8 @@ Before generating the final report, present key findings for user confirmation:
 - Which risk items should be emphasized in the report?
 
 This step is critical for weak models — project knowledge lives with the user, not the agent.
+
+If the user already asked to analyze the latest change and did not explicitly ask to pause for confirmation, continue to Step 5 after presenting the key evidence. Do not stop at a terminal/chat summary.
 
 ### Step 5: Final Report (生成最终报告)
 
@@ -390,9 +402,16 @@ Use evidence-backed language. When confidence is low, state why:
 2. Run `--step discover` and confirm scope with user.
 3. Run `--step triage` for quick risk scoring.
 4. Run `--step expand` for focused reference search.
-5. Present key evidence for user confirmation (Step 4).
+5. Present key evidence for user confirmation (Step 4), but continue if the user asked for a complete analysis and did not ask to pause.
 6. Run `--step report` to generate the final Markdown.
-7. Read `.impact-scan/risk_report.md` and summarize for the user.
+7. Verify `.impact-scan/risk_report.md` exists. If it does not exist, run one-shot mode as fallback.
+8. Read `.impact-scan/risk_report.md` and summarize for the user.
+
+Completion rule:
+
+- Completed: `.impact-scan/risk_report.md` exists and the final reply includes its path.
+- Not completed: only terminal/chat text was produced, or only JSON artifacts were produced.
+- Recovery: run `python c-regression-impact-scan/scripts/c_impact_scan.py --step report --range HEAD~1..HEAD` from the target repo. If report artifacts are missing, run one-shot mode without `--step`.
 
 If CodeGraph is missing, tell the user and either stop (`--codegraph-mode required`) or continue with lower confidence (`--codegraph-mode prefer`).
 

@@ -17,6 +17,8 @@
 .impact-scan/risk_report.md
 ```
 
+注意：终端或 Claude Code 对话里的总结不等于最终交付。一次分析只有在 `.impact-scan/risk_report.md` 已生成后才算完成。
+
 ## 解决什么问题
 
 在大型 C 工程中，新功能开发经常会修改公共接口、公共模块、宏、结构体、回调表、状态机或生命周期逻辑，从而影响已有功能。这个 skill 把这类回归风险分析固化为一个可重复流程：
@@ -165,6 +167,18 @@ python .claude\skills\c-regression-impact-scan\scripts\c_impact_scan.py --step r
 - `risk_report.md`：最终中文 Markdown 检测报告。
 
 `expand` 步不会默认展开所有 changed symbols，而是优先展开用户指定 symbol、高风险 symbol、public interface symbol 和 memory-lifetime symbol。这样更适合百万级仓库和慢速内网模型。
+
+如果 Claude Code 在 `triage` 或 `expand` 后只在终端里回复了分析结论，没有生成 `.impact-scan/risk_report.md`，说明 agent 没有继续执行 `--step report`。可直接补跑：
+
+```powershell
+python .claude\skills\c-regression-impact-scan\scripts\c_impact_scan.py --step report --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+```
+
+如果前面的 JSON 中间文件也不存在，则直接运行 one-shot：
+
+```powershell
+python .claude\skills\c-regression-impact-scan\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+```
 
 ## Focus 配置
 
