@@ -306,7 +306,7 @@ FOCUS_CONFIG_NAME_JSON = ".impact-scan-focus.json"
 FOCUS_CONFIG_NAME_YAML_ALT = ".impact-scan-focus.yaml"
 
 
-def load_focus_config(repo, cli_focus_symbols=None, cli_focus_risks=None, cli_ignore_paths=None):
+def load_focus_config(source, cli_focus_symbols=None, cli_focus_risks=None, cli_ignore_paths=None):
     """Load user-provided focus config from file and/or CLI flags.
 
     Supports two file formats:
@@ -322,15 +322,23 @@ def load_focus_config(repo, cli_focus_symbols=None, cli_focus_risks=None, cli_ig
 
     CLI flags take precedence over file config.
     """
+    source = Path(source)
     focus = {
         "focus_symbols": [],
         "focus_risks": [],
         "ignore_paths": [],
+        "legacy_paths": [],
+        "public_interfaces": [],
         "notes": [],
         "scope_override": None,
     }
 
-    for candidate in [repo / FOCUS_CONFIG_NAME_JSON, repo / FOCUS_CONFIG_NAME, repo / FOCUS_CONFIG_NAME_YAML_ALT]:
+    if source.is_file():
+        candidates = [source]
+    else:
+        candidates = [source / FOCUS_CONFIG_NAME_JSON, source / FOCUS_CONFIG_NAME, source / FOCUS_CONFIG_NAME_YAML_ALT]
+
+    for candidate in candidates:
         if candidate.exists():
             text = candidate.read_text(encoding="utf-8")
             if candidate.suffix == ".json":
@@ -350,6 +358,8 @@ def load_focus_config(repo, cli_focus_symbols=None, cli_focus_risks=None, cli_ig
                 focus["focus_symbols"] = _list_value(raw, "focus_symbols")
                 focus["focus_risks"] = _list_value(raw, "focus_risks")
                 focus["ignore_paths"] = _list_value(raw, "ignore_paths")
+                focus["legacy_paths"] = _list_value(raw, "legacy_paths")
+                focus["public_interfaces"] = _list_value(raw, "public_interfaces")
                 focus["notes"] = _list_value(raw, "notes")
                 scope = raw.get("subsystem")
                 if scope:
@@ -428,6 +438,57 @@ def filter_ignored_paths(items, focus, key="path"):
     if not ignore:
         return items
     return [item for item in items if not path_matches_any_prefix(item.get(key, ""), ignore)]
+
+
+def filter_symbols_by_focus(symbols, focus):
+    """Remove changed symbols from ignored paths."""
+    if not focus.get("ignore_paths"):
+        return symbols
+    return [symbol for symbol in symbols if not should_ignore_path(symbol.get("file", ""), focus)]
+
+
+def filter_files_by_focus(files, focus):
+    """Remove changed files from ignored paths."""
+    return filter_ignored_paths(files, focus, "path")
+
+
+def filter_risks_by_focus(risks, focus):
+    """Remove or trim risk items whose evidence only comes from ignored paths."""
+    if not focus.get("ignore_paths"):
+        return risks
+    filtered = []
+    for risk in risks:
+        subject = risk.get("subject", "")
+        if should_ignore_path(subject, focus):
+            continue
+        evidence = risk.get("evidence_files", [])
+        trimmed = [path for path in evidence if not should_ignore_path(path, focus)]
+        if evidence and not trimmed:
+            continue
+        item = dict(risk)
+        item["evidence_files"] = trimmed
+        filtered.append(item)
+    return filtered
+
+
+def filter_references_by_focus(refs, focus, config=None):
+    """Trim reference files that match ignore_paths and recalculate counts."""
+    if not focus.get("ignore_paths"):
+        return refs
+    filtered = []
+    for ref in refs:
+        files = [path for path in ref.get("files", []) if not should_ignore_path(path, focus)]
+        item = dict(ref)
+        item["files"] = files
+        item["file_count"] = len(files)
+        if config:
+            item["subsystem_count"] = len(set(configured_subsystem_for(path, config) for path in files))
+            item["legacy_file_count"] = len([path for path in files if path_matches_prefix(path, config["legacy_paths"])])
+        else:
+            item["subsystem_count"] = len(set(subsystem_for(path) for path in files))
+            item["legacy_file_count"] = 0
+        filtered.append(item)
+    return filtered
 
 
 def decode_process_output(data):
@@ -1179,9 +1240,10 @@ def markdown_report(
     return "\n".join(lines) + "\n"
 
 
-def _step_discover(repo, out, config, codegraph, args):
+def _step_discover(repo, out, config, codegraph, args, focus):
     """Step 1: Scope discovery. Output changed files and inferred subsystems."""
     files = parse_changed_files(repo, args.range, config)
+    files = filter_files_by_focus(files, focus)
     subsystems_inferred = sorted(set(
         configured_subsystem_for(item["path"], config) for item in files
     ))
@@ -1211,7 +1273,9 @@ def _step_discover(repo, out, config, codegraph, args):
 def _step_triage(repo, out, config, codegraph, args, focus):
     """Step 2: Quick risk triage. Score files and symbols WITHOUT reference search."""
     files = parse_changed_files(repo, args.range, config)
+    files = filter_files_by_focus(files, focus)
     symbols = extract_symbols(repo, args.range, args.max_symbols, config)
+    symbols = filter_symbols_by_focus(symbols, focus)
 
     # Build risk items without references
     risks = build_risk_items(files, symbols, [], config)
@@ -1226,11 +1290,8 @@ def _step_triage(repo, out, config, codegraph, args, focus):
         )
         risk["user_focus"] = is_focus
 
-    # Filter out ignored paths from risk items
-    risks = filter_ignored_paths(risks, focus, "subject")
-    for sym in symbols:
-        if should_ignore_path(sym["file"], focus):
-            continue
+    # Filter out ignored paths from risk items and evidence
+    risks = filter_risks_by_focus(risks, focus)
 
     high_count = sum(1 for r in risks if r["level"] == "high")
     medium_count = sum(1 for r in risks if r["level"] == "medium")
@@ -1284,9 +1345,13 @@ def _step_expand(repo, out, config, codegraph, args, focus):
     files = _load_json_artifact(out, "diff_summary.json", [])
     symbols = _load_json_artifact(out, "changed_symbols.json", [])
     risks = _load_json_artifact(out, "risk_items.json", [])
+    files = filter_files_by_focus(files, focus)
+    symbols = filter_symbols_by_focus(symbols, focus)
+    risks = filter_risks_by_focus(risks, focus)
 
     if not symbols:
         symbols = extract_symbols(repo, args.range, args.max_symbols, config)
+        symbols = filter_symbols_by_focus(symbols, focus)
         write_json(out / "changed_symbols.json", symbols)
 
     selected, reasons = select_symbols_for_expansion(symbols, risks, focus)
@@ -1308,10 +1373,11 @@ def _step_expand(repo, out, config, codegraph, args, focus):
             refs.append(reference_result(sym["name"], backend, files_found, config))
         else:
             refs.append(reference_result(sym["name"], "skipped", [], config))
+    refs = filter_references_by_focus(refs, focus, config)
 
     # Rebuild risks with reference data
     risks = build_risk_items(files, symbols, refs, config)
-    risks = filter_ignored_paths(risks, focus, "subject")
+    risks = filter_risks_by_focus(risks, focus)
     impact_paths = build_impact_paths(refs, config)
 
     write_json(out / "codegraph_status.json", codegraph)
@@ -1345,23 +1411,30 @@ def _step_report(repo, out, config, codegraph, args, focus):
     symbols = _load_json_artifact(out, "changed_symbols.json", [])
     refs = _load_json_artifact(out, "references.json", [])
     risks = _load_json_artifact(out, "risk_items.json", [])
+    files = filter_files_by_focus(files, focus)
+    symbols = filter_symbols_by_focus(symbols, focus)
+    refs = filter_references_by_focus(refs, focus, config)
+    risks = filter_risks_by_focus(risks, focus)
 
     # If we have no artifacts yet, run a quick one-shot
     if not files and not symbols:
         files = parse_changed_files(repo, args.range, config)
+        files = filter_files_by_focus(files, focus)
         symbols = extract_symbols(repo, args.range, args.max_symbols, config)
+        symbols = filter_symbols_by_focus(symbols, focus)
         write_json(out / "diff_summary.json", files)
         write_json(out / "changed_symbols.json", symbols)
 
     if not refs:
         refs = gather_references(repo, symbols, args.max_refs, codegraph, config)
+        refs = filter_references_by_focus(refs, focus, config)
         write_json(out / "references.json", refs)
 
     if not risks:
         risks = build_risk_items(files, symbols, refs, config)
+        risks = filter_risks_by_focus(risks, focus)
         write_json(out / "risk_items.json", risks)
 
-    risks = filter_ignored_paths(risks, focus, "subject")
     impact_paths = build_impact_paths(refs, config)
     subsystems = subsystem_impact(files, refs, config)
     subsystem_analysis = build_subsystem_analysis(files, refs, risks, impact_paths, config)
@@ -1510,28 +1583,26 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
 
     # Resolve focus: --focus file takes precedence, CLI flags override
-    focus_repo = repo
+    focus_source = repo
     if args.focus:
         focus_path = Path(args.focus)
         if not focus_path.is_absolute():
             focus_path = cwd / focus_path
-        if focus_path.exists():
-            focus_repo = focus_path.parent
-    focus = load_focus_config(focus_repo, args.focus_symbols, args.focus_risks, args.ignore_paths)
+        focus_source = focus_path
+    focus = load_focus_config(focus_source, args.focus_symbols, args.focus_risks, args.ignore_paths)
 
     # Scope override from focus config
     subsystem = args.subsystem or focus.get("scope_override") or ""
     config = load_scan_config(repo, subsystem)
 
     # Merge focus config legacy_paths / public_interfaces into scan config
-    if focus.get("scope_override"):
-        for key in ("legacy_paths", "public_interfaces"):
-            values = focus.get(key, [])
-            if values:
-                for v in values:
-                    normalized = scoped_prefix(subsystem, str(v))
-                    if normalized and normalized not in config.setdefault(key, []):
-                        config[key].append(normalized)
+    for key in ("legacy_paths", "public_interfaces"):
+        values = focus.get(key, [])
+        if values:
+            for v in values:
+                normalized = scoped_prefix(subsystem, str(v))
+                if normalized and normalized not in config.setdefault(key, []):
+                    config[key].append(normalized)
 
     codegraph = prepare_codegraph(repo, args.codegraph_mode, args.init_codegraph)
     if args.codegraph_mode == "required" and not codegraph["available"]:
@@ -1540,7 +1611,7 @@ def main(argv=None):
         return 3
 
     if args.step == "discover":
-        return _step_discover(repo, out, config, codegraph, args)
+        return _step_discover(repo, out, config, codegraph, args, focus)
     elif args.step == "triage":
         return _step_triage(repo, out, config, codegraph, args, focus)
     elif args.step == "expand":
@@ -1550,10 +1621,13 @@ def main(argv=None):
 
     # --- One-shot mode (no --step): backward compatible ---
     files = parse_changed_files(repo, args.range, config)
+    files = filter_files_by_focus(files, focus)
     symbols = extract_symbols(repo, args.range, args.max_symbols, config)
+    symbols = filter_symbols_by_focus(symbols, focus)
     refs = gather_references(repo, symbols, args.max_refs, codegraph, config)
+    refs = filter_references_by_focus(refs, focus, config)
     risks = build_risk_items(files, symbols, refs, config)
-    risks = filter_ignored_paths(risks, focus, "subject")
+    risks = filter_risks_by_focus(risks, focus)
     subsystems = subsystem_impact(files, refs, config)
     impact_paths = build_impact_paths(refs, config)
     subsystem_analysis = build_subsystem_analysis(files, refs, risks, impact_paths, config)

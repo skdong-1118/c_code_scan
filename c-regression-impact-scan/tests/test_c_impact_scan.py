@@ -251,6 +251,10 @@ class CImpactScanTests(unittest.TestCase):
                     "ignore_paths:",
                     "  - tests/",
                     "  - docs/",
+                    "legacy_paths:",
+                    "  - oldflow/",
+                    "public_interfaces:",
+                    "  - exported/",
                     "notes:",
                     "  - old client must not change",
                 ]),
@@ -263,8 +267,36 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("memory_leak", focus["focus_risks"])
         self.assertIn("abi_layout", focus["focus_risks"])
         self.assertIn("tests/", focus["ignore_paths"])
+        self.assertIn("oldflow/", focus["legacy_paths"])
+        self.assertIn("exported/", focus["public_interfaces"])
         self.assertIn("subsys/net", focus["scope_override"])
         self.assertTrue(any("old client" in n for n in focus["notes"]))
+
+    def test_focus_config_loaded_from_explicit_file_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            config_dir = repo / "configs"
+            config_dir.mkdir()
+            focus_file = config_dir / "net-focus.yml"
+            focus_file.write_text(
+                "\n".join([
+                    "subsystem: subsys/net",
+                    "focus_symbols:",
+                    "  - api_open",
+                    "legacy_paths:",
+                    "  - oldflow/",
+                    "public_interfaces:",
+                    "  - exported/",
+                ]),
+                encoding="utf-8",
+            )
+
+            focus = scan.load_focus_config(focus_file)
+
+        self.assertEqual("subsys/net", focus["scope_override"])
+        self.assertEqual(["api_open"], focus["focus_symbols"])
+        self.assertEqual(["oldflow/"], focus["legacy_paths"])
+        self.assertEqual(["exported/"], focus["public_interfaces"])
 
     def test_focus_cli_flags_override_file_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -313,6 +345,32 @@ class CImpactScanTests(unittest.TestCase):
 
         self.assertEqual(1, len(filtered))
         self.assertEqual("src/main.c", filtered[0]["path"])
+
+    def test_focus_ignore_filters_symbols_risks_and_reference_files(self):
+        focus = {"focus_symbols": [], "focus_risks": [], "ignore_paths": ["tests/", "docs/"], "notes": []}
+        config = scan.default_scan_config()
+        symbols = [
+            scan.changed_symbol("test_helper", "tests/test_helper.c", "function", "int test_helper(void);"),
+            scan.changed_symbol("api_open", "src/api.c", "function", "int api_open(void);"),
+        ]
+        risks = [
+            scan.risk_item("tests/test_helper.c", "file", 4, ["test only"], ["tests/test_helper.c"]),
+            scan.risk_item("api_open", "function", 8, ["public/shared interface path changed"], ["tests/api_test.c", "src/api.c"]),
+            scan.risk_item("doc_note", "function", 6, ["doc only"], ["docs/readme.md"]),
+        ]
+        refs = [
+            scan.reference_result("api_open", "rg", ["tests/api_test.c", "src/client.c"], config),
+        ]
+
+        filtered_symbols = scan.filter_symbols_by_focus(symbols, focus)
+        filtered_risks = scan.filter_risks_by_focus(risks, focus)
+        filtered_refs = scan.filter_references_by_focus(refs, focus, config)
+
+        self.assertEqual(["api_open"], [s["name"] for s in filtered_symbols])
+        self.assertEqual(["api_open"], [r["subject"] for r in filtered_risks])
+        self.assertEqual(["src/api.c"], filtered_risks[0]["evidence_files"])
+        self.assertEqual(["src/client.c"], filtered_refs[0]["files"])
+        self.assertEqual(1, filtered_refs[0]["file_count"])
 
     def _make_git_repo(self, tmp):
         """Create a minimal git repo in tmp with two commits (so HEAD~1..HEAD works)."""

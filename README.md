@@ -146,6 +146,63 @@ codegraph init -i
 
 可以先手工初始化 CodeGraph，或者后续把脚本初始化逻辑调整为优先执行 `codegraph init -i`。
 
+## 推荐分步流程
+
+内网模型能力较弱或仓库较大时，推荐使用 guided workflow。它把一次完整分析拆成 scope discovery、triage、focused expansion、report 四步，避免模型一次性消化过多上下文。
+
+```powershell
+python .claude\skills\c-regression-impact-scan\scripts\c_impact_scan.py --step discover --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+python .claude\skills\c-regression-impact-scan\scripts\c_impact_scan.py --step triage --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+python .claude\skills\c-regression-impact-scan\scripts\c_impact_scan.py --step expand --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+python .claude\skills\c-regression-impact-scan\scripts\c_impact_scan.py --step report --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+```
+
+四步输出的核心文件：
+
+- `scope_discovery.json`：变更范围、C/header 文件、推断 subsystem。
+- `triage_summary.json`：快速风险分级、用户关注项覆盖情况、建议展开的 symbol。
+- `expansion_summary.json`：实际展开的 symbol、CodeGraph/rg 命中情况。
+- `risk_report.md`：最终中文 Markdown 检测报告。
+
+`expand` 步不会默认展开所有 changed symbols，而是优先展开用户指定 symbol、高风险 symbol、public interface symbol 和 memory-lifetime symbol。这样更适合百万级仓库和慢速内网模型。
+
+## Focus 配置
+
+如果你希望 Claude Code 不用每次显式说明重点，可以在仓库根目录或子系统目录放置 `.impact-scan-focus.yml`，也可以通过 `--focus path\to\focus.yml` 指定任意配置文件。
+
+```yaml
+subsystem: subsys/net
+focus_symbols:
+  - api_open
+  - session_alloc
+focus_risks:
+  - memory_leak
+  - callback_dispatch
+ignore_paths:
+  - tests/
+  - docs/
+legacy_paths:
+  - legacy/
+  - stable/
+public_interfaces:
+  - include/
+  - exported/
+notes:
+  - old client must not change
+```
+
+字段说明：
+
+- `subsystem`：默认扫描的子系统路径；没有显式传 `--subsystem` 时会使用它。
+- `focus_symbols`：用户最关心的 function/symbol，`expand` 会优先查这些 symbol 的 impact。
+- `focus_risks`：用户最关心的风险类别，例如 `memory_leak`、`callback_dispatch`、`protocol_compatibility`。
+- `ignore_paths`：从 changed files、changed symbols、reference evidence、risk items 和最终报告中排除的路径前缀。
+- `legacy_paths`：补充老功能路径，用来识别 legacy hit 和老功能影响面。
+- `public_interfaces`：补充公共接口路径，用来识别 public interface 变更。
+- `notes`：会写入报告的人工关注备注。
+
+命令行参数 `--focus-symbols`、`--focus-risks`、`--ignore-paths` 会覆盖配置文件中的同名字段。
+
 ## 子系统配置
 
 建议把 `.impact-scan.yml` 放在每个子系统目录下，而不是仓库根目录。
@@ -215,6 +272,9 @@ subsys/net/include/
 .impact-scan/risk_report.md
 .impact-scan/scan_config.json
 .impact-scan/codegraph_status.json
+.impact-scan/scope_discovery.json
+.impact-scan/triage_summary.json
+.impact-scan/expansion_summary.json
 .impact-scan/diff_summary.json
 .impact-scan/changed_symbols.json
 .impact-scan/impact_paths.json
