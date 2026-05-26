@@ -220,6 +220,7 @@ subsys/net/include/
 .impact-scan/impact_paths.json
 .impact-scan/references.json
 .impact-scan/subsystem_impact.json
+.impact-scan/subsystem_analysis.json
 .impact-scan/risk_items.json
 .impact-scan/architecture_risk_summary.json
 .impact-scan/manual_review.json
@@ -253,6 +254,17 @@ subsys/net/include/
 - `Limitations`
 
 报告语言风格为中文描述为主，但专业术语保留英文，例如 `changed symbols`、`subsystem`、`legacy path`、`memory-lifetime`、`ABI`、`callback`、`dispatch table`、`compile database`、`CodeGraph`。这样便于工程团队阅读，也避免强行翻译造成歧义。
+
+其中 `Affected Subsystem Candidates` 不只列出命中数量，还会按 subsystem 展开：
+
+- `Impact reason`：说明为什么该 subsystem 可能受影响，例如 public interface 变更、legacy path 引用、high-risk architecture path、memory-sensitive path 或跨 subsystem reference。
+- `Changed files`：列出本次提交在该 subsystem 内直接修改的文件。
+- `Referenced/impact files`：列出 CodeGraph 或 fallback 搜索命中的引用文件，用于定位老功能调用链。
+- `Symbols`：列出把本次修改与该 subsystem 关联起来的 changed symbol。
+- `Risk categories`：列出 `memory_leak`、`abi_layout`、`concurrency`、`protocol_compatibility` 等架构风险类别。
+- `Suggested checks`：给出该 subsystem 推荐的 legacy tests、ABI/layout review、memory-lifetime check、protocol compatibility 验证等检查动作。
+
+弱模型或内网 Claude Code 可以优先读取 `.impact-scan/subsystem_analysis.json`，再把其中内容整理进最终 Markdown 报告。
 
 ## 检查项说明
 

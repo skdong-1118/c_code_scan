@@ -108,6 +108,36 @@ class CImpactScanTests(unittest.TestCase):
         self.assertTrue(paths[0]["is_legacy"])
         self.assertEqual(paths[0]["subsystem"], "legacy/http")
 
+    def test_subsystem_analysis_expands_impact_reason_and_checks(self):
+        config = scan.default_scan_config("subsys/net")
+        config["legacy_paths"].append("subsys/net/legacy/")
+        files = [scan.changed_file("subsys/net/include/api.h", "M", added=3, deleted=1)]
+        for item in files:
+            scan.apply_config_to_file(item, config)
+        refs = [scan.reference_result("api_open", "codegraph", ["subsys/net/legacy/client.c"], config)]
+        risks = [
+            scan.risk_item(
+                "api_open",
+                "function",
+                12,
+                ["symbol is in public/shared path", "referenced by 1 legacy files"],
+                ["subsys/net/include/api.h", "subsys/net/legacy/client.c"],
+                ["abi_layout", "error_handling"],
+            )
+        ]
+        impact_paths = scan.build_impact_paths(refs, config)
+
+        analysis = scan.build_subsystem_analysis(files, refs, risks, impact_paths, config)
+
+        self.assertEqual("subsys/net", analysis[0]["name"])
+        self.assertIn("subsys/net/include/api.h", analysis[0]["changed_files"])
+        self.assertIn("subsys/net/legacy/client.c", analysis[0]["referenced_files"])
+        self.assertIn("api_open", analysis[0]["symbols"])
+        self.assertIn("abi_layout", analysis[0]["risk_categories"])
+        self.assertTrue(analysis[0]["legacy_hit"])
+        self.assertTrue(any("public interface" in reason for reason in analysis[0]["why_impacted"]))
+        self.assertTrue(any("legacy tests" in check for check in analysis[0]["suggested_checks"]))
+
     def test_detects_architecture_risk_categories_from_c_evidence(self):
         cases = {
             "memory_safety": "memcpy(dst, src, len + 1);",

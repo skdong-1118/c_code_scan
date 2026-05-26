@@ -49,6 +49,7 @@ The target environment is a large commercial C codebase, usually intranet-only, 
    - `.impact-scan/impact_paths.json`
    - `.impact-scan/references.json`
    - `.impact-scan/subsystem_impact.json`
+   - `.impact-scan/subsystem_analysis.json`
    - `.impact-scan/risk_items.json`
    - `.impact-scan/architecture_risk_summary.json`
    - `.impact-scan/manual_review.json`
@@ -56,7 +57,7 @@ The target environment is a large commercial C codebase, usually intranet-only, 
    - overall risk: high, medium, or low
    - whether CodeGraph was used successfully
    - high-risk changed files and symbols
-   - affected legacy subsystem candidates
+   - affected legacy subsystem candidates, with per-subsystem impact reason, changed files, referenced files, changed symbols, risk categories, and suggested checks
    - evidence paths from changed item to references
    - memory-lifetime and leak-risk findings
    - architecture risk categories

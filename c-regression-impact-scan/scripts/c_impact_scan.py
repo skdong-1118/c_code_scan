@@ -697,6 +697,120 @@ def build_impact_paths(refs, config):
     return paths
 
 
+def unique_limited(values, limit=20):
+    result = []
+    seen = set()
+    for value in values:
+        if value and value not in seen:
+            result.append(value)
+            seen.add(value)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def checks_for_categories(categories, legacy_hit):
+    checks = []
+    if legacy_hit:
+        checks.append("运行该 subsystem 的 legacy tests，重点验证老功能路径和兼容行为。")
+    if "abi_layout" in categories:
+        checks.append("Review ABI/layout compatibility，检查 public structs、enums、typedefs 和 exported headers。")
+    if "memory_safety" in categories or "memory_leak" in categories or "ownership_lifetime" in categories:
+        checks.append("执行 memory-lifetime 检查，覆盖 allocation/free、refcount、cleanup 和 error paths。")
+    if "concurrency" in categories:
+        checks.append("压测 concurrency paths，并 review lock/unlock、atomic、timer 和 thread interactions。")
+    if "protocol_compatibility" in categories:
+        checks.append("验证 protocol compatibility，覆盖旧 peer/client data 和 version negotiation。")
+    if "state_machine_timing" in categories:
+        checks.append("回放 state-machine、timeout、retry、start/stop 和 event-order scenarios。")
+    if "callback_dispatch" in categories:
+        checks.append("Review callback、ops table、handler registration 和 dispatch table behavior。")
+    if "performance_resource" in categories:
+        checks.append("检查 CPU、memory、file/socket/thread/timer resources 和 loop complexity。")
+    if "security_boundary" in categories:
+        checks.append("Review auth、permission、input validation 和 path/command handling。")
+    if "build_deploy" in categories:
+        checks.append("验证 build variants、link flags、exported symbols 和 deployment packaging。")
+    if not checks:
+        checks.append("针对该 subsystem 的 changed files 和 referenced files 运行 focused regression tests。")
+    return checks
+
+
+def build_subsystem_analysis(files, refs, risks, impact_paths, config):
+    by_name = {}
+
+    def entry_for(name):
+        return by_name.setdefault(
+            name,
+            {
+                "name": name,
+                "changed_files": [],
+                "referenced_files": [],
+                "symbols": [],
+                "risk_categories": [],
+                "max_score": 0,
+                "legacy_hit": False,
+                "why_impacted": [],
+                "suggested_checks": [],
+            },
+        )
+
+    for item in files:
+        name = item.get("subsystem") or configured_subsystem_for(item["path"], config)
+        entry = entry_for(name)
+        entry["changed_files"].append(item["path"])
+        entry["why_impacted"].append("本次提交直接修改了该 subsystem 内文件 (direct changed file)")
+        if item.get("is_public_interface"):
+            entry["why_impacted"].append("修改了 public interface file，可能影响老功能的 include/API contract")
+        if item.get("is_high_risk_path"):
+            entry["why_impacted"].append("修改了 high-risk architecture path，需要关注跨模块行为")
+        if item.get("is_memory_sensitive_path"):
+            entry["why_impacted"].append("修改了 memory-sensitive path，需要关注 ownership/lifetime 和 leak risk")
+        if item.get("is_legacy_path"):
+            entry["legacy_hit"] = True
+            entry["why_impacted"].append("直接修改 legacy path，老功能行为可能被改变")
+
+    for ref in refs:
+        for path in ref.get("files", []):
+            name = configured_subsystem_for(path, config)
+            entry = entry_for(name)
+            entry["referenced_files"].append(path)
+            entry["symbols"].append(ref["symbol"])
+            entry["why_impacted"].append("changed symbol 被该 subsystem 文件引用，存在 reference impact")
+            if path_matches_prefix(path, config["legacy_paths"]):
+                entry["legacy_hit"] = True
+                entry["why_impacted"].append("changed symbol referenced by legacy path，需重点验证老功能路径")
+
+    for path in impact_paths:
+        entry = entry_for(path["subsystem"])
+        entry["symbols"].append(path["symbol"])
+        entry["referenced_files"].append(path["target_file"])
+        entry["why_impacted"].append("CodeGraph/fallback impact path reaches this subsystem")
+        if path.get("is_legacy"):
+            entry["legacy_hit"] = True
+            entry["why_impacted"].append("impact path reaches legacy path，存在回归风险放大点")
+
+    for risk in risks:
+        for file_path in risk.get("evidence_files", []):
+            name = configured_subsystem_for(file_path, config)
+            entry = entry_for(name)
+            entry["max_score"] = max(entry["max_score"], risk["score"])
+            entry["risk_categories"].extend(risk.get("risk_categories", []))
+            entry["why_impacted"].extend(risk.get("reasons", [])[:5])
+            if risk["kind"] != "file":
+                entry["symbols"].append(risk["subject"])
+
+    for entry in by_name.values():
+        entry["changed_files"] = unique_limited(entry["changed_files"], 10)
+        entry["referenced_files"] = unique_limited(entry["referenced_files"], 10)
+        entry["symbols"] = unique_limited(entry["symbols"], 10)
+        entry["risk_categories"] = unique_limited(entry["risk_categories"], 10)
+        entry["why_impacted"] = unique_limited(entry["why_impacted"], 10)
+        entry["suggested_checks"] = checks_for_categories(entry["risk_categories"], entry["legacy_hit"])
+
+    return sorted(by_name.values(), key=lambda item: (-item["max_score"], not item["legacy_hit"], item["name"]))
+
+
 def build_architecture_risk_summary(risks):
     summary = {}
     for item in risks:
@@ -738,7 +852,19 @@ def manual_review_items(risks):
     return review[:30]
 
 
-def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsystems, config, impact_paths, arch_summary):
+def markdown_report(
+    commit_range,
+    codegraph,
+    files,
+    symbols,
+    refs,
+    risks,
+    subsystems,
+    config,
+    impact_paths,
+    arch_summary,
+    subsystem_analysis,
+):
     top_level = risks[0]["level"] if risks else "low"
     max_score = risks[0]["score"] if risks else 0
     backends = set(r["backend"] for r in refs if r["backend"] != "none")
@@ -790,8 +916,43 @@ def markdown_report(commit_range, codegraph, files, symbols, refs, risks, subsys
         lines.append("- 未检测到 architecture-specific risk category。")
 
     lines.extend(["", "## 受影响 subsystem 候选", ""])
-    for sub in subsystems.get("subsystems", [])[:20]:
-        lines.append("- `{}`: {} 条 evidence 命中".format(sub["name"], sub["count"]))
+    if subsystem_analysis:
+        counts = {item["name"]: item["count"] for item in subsystems.get("subsystems", [])}
+        for sub in subsystem_analysis[:20]:
+            lines.extend(
+                [
+                    "### `{}`".format(sub["name"]),
+                    "- Evidence count: {}".format(counts.get(sub["name"], 0)),
+                    "- Max score: {}".format(sub["max_score"]),
+                    "- Legacy hit: {}".format("是" if sub["legacy_hit"] else "否"),
+                ]
+            )
+            if sub["why_impacted"]:
+                lines.append("- Impact reason:")
+                for reason in sub["why_impacted"][:8]:
+                    lines.append("  - {}".format(reason))
+            if sub["changed_files"]:
+                lines.append("- Changed files:")
+                for file_path in sub["changed_files"][:8]:
+                    lines.append("  - `{}`".format(file_path))
+            if sub["referenced_files"]:
+                lines.append("- Referenced/impact files:")
+                for file_path in sub["referenced_files"][:8]:
+                    lines.append("  - `{}`".format(file_path))
+            if sub["symbols"]:
+                lines.append("- Symbols: {}".format(", ".join("`{}`".format(symbol) for symbol in sub["symbols"][:10])))
+            if sub["risk_categories"]:
+                lines.append(
+                    "- Risk categories: {}".format(
+                        ", ".join("`{}`".format(category) for category in sub["risk_categories"][:10])
+                    )
+                )
+            lines.append("- Suggested checks:")
+            for check in sub["suggested_checks"][:8]:
+                lines.append("  - {}".format(check))
+            lines.append("")
+    else:
+        lines.append("- 未发现受影响 subsystem 候选。")
 
     lines.extend(["", "## Reference Evidence", ""])
     for ref in refs[:30]:
@@ -905,6 +1066,7 @@ def main():
     risks = build_risk_items(files, symbols, refs, config)
     subsystems = subsystem_impact(files, refs, config)
     impact_paths = build_impact_paths(refs, config)
+    subsystem_analysis = build_subsystem_analysis(files, refs, risks, impact_paths, config)
     arch_summary = build_architecture_risk_summary(risks)
 
     write_json(out / "scan_config.json", config)
@@ -917,9 +1079,22 @@ def main():
     write_json(out / "architecture_risk_summary.json", arch_summary)
     write_json(out / "manual_review.json", manual_review_items(risks))
     write_json(out / "subsystem_impact.json", subsystems)
+    write_json(out / "subsystem_analysis.json", subsystem_analysis)
     write_markdown_report(
         out / "risk_report.md",
-        markdown_report(args.range, codegraph, files, symbols, refs, risks, subsystems, config, impact_paths, arch_summary),
+        markdown_report(
+            args.range,
+            codegraph,
+            files,
+            symbols,
+            refs,
+            risks,
+            subsystems,
+            config,
+            impact_paths,
+            arch_summary,
+            subsystem_analysis,
+        ),
     )
 
     print("wrote {}".format(out / "risk_report.md"))
