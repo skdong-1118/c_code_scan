@@ -1,6 +1,6 @@
 ---
 name: c-regression-impact-scan
-description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, memory safety, ABI/layout, concurrency, error handling, ownership/lifetime, macro/config behavior, protocol compatibility, state timing, callback dispatch, performance/resource usage, security boundaries, build/deploy behavior, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic architecture risk rules. The final deliverable must be a Chinese Markdown detection report.
+description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, memory leaks, memory safety, concurrency, ownership/lifetime, macro/config behavior, protocol compatibility, state timing, callback dispatch, performance/resource usage, security boundaries, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic architecture risk rules. The final deliverable must be a Chinese Markdown detection report.
 ---
 
 # C Regression Impact Scan
@@ -87,9 +87,6 @@ repo/
 ```
 
 ```yaml
-public_interfaces:
-  - include/
-  - sdk/include/
 legacy_paths:
   - legacy/
   - product/stable/
@@ -183,8 +180,7 @@ Use deterministic rules to identify risk signals from:
 - variable names and function names
 - file paths and subsystem paths
 - git diff content
-- changed public headers
-- changed macros, structs, callbacks, globals, memory-lifetime code
+- changed macros, callbacks, globals, memory-lifetime code
 - architecture risk categories and scores
 
 Heuristic analysis is only `risk triage`. It can say "this should be reviewed" or "this is likely high risk"; it must not say "this is safe" unless stronger evidence exists.
@@ -208,29 +204,21 @@ For each Manual Review item, include the subject, kind, level, reasons, evidence
 
 Use deterministic scoring before model reasoning. Treat these as default weights:
 
-- changed public `.h` file: +4
-- changed path containing `include`, `common`, `public`, `api`, `lib`, `platform`, `protocol`, `sdk`, or `adapter`: +3
-- function signature or declaration changed: +4
-- `struct`, `union`, `enum`, or `typedef` changed: +4
 - macro or conditional compilation changed: +3
 - function pointer, callback, ops table, or vtable-like table changed: +4
 - memory allocation/lifetime related change: +5
 - memory-sensitive path change: +2 to +3
 - legacy reference from CodeGraph or `rg`: +4
 - configured high-risk path change: +3
-- semantic behavior keyword changed, such as return/error/NULL/size/lock: +2
 - global variable changed: +2
 - changed symbol referenced by 10 or more files: +3
 - changed symbol referenced across 3 or more top-level subsystems: +3
-- build file or feature switch changed: +3
 
 Architecture risk category weights:
 
 - `memory_safety`: +5
 - `memory_leak`: +5
-- `abi_layout`: +5
 - `concurrency`: +4
-- `error_handling`: +3
 - `ownership_lifetime`: +4
 - `macro_config`: +3
 - `protocol_compatibility`: +4
@@ -238,11 +226,10 @@ Architecture risk category weights:
 - `callback_dispatch`: +4
 - `performance_resource`: +3
 - `security_boundary`: +5
-- `build_deploy`: +3
 
 Risk level:
 
-- `high`: score >= 8, or any public header/API change with broad references
+- `high`: score >= 8
 - `medium`: score 4-7
 - `low`: score 0-3 and narrow local references
 
@@ -256,15 +243,11 @@ Confidence:
 
 发现以下 C 风险时必须在报告中突出说明：
 
-- 公共头文件变化
-- 结构体布局变化，包括字段顺序和字段类型变化
-- 枚举值变化
 - 宏默认值变化
 - `#ifdef` / `#if` 行为变化
 - 回调注册和函数指针表变化
 - 分配/释放所有权变化以及潜在泄漏路径
 - `malloc`, `calloc`, `realloc`, `strdup`, `free`, `release`, `destroy`, `cleanup`, `refcount`, buffer size, and error-exit path changes
-- 错误码、返回值、所有权、生命周期或 buffer size 语义变化
 - 老功能子系统使用的共享模块变化
 
 ## 架构风险类别
@@ -273,9 +256,7 @@ Confidence:
 
 - `memory_safety`: buffer overflow, out-of-bounds, use-after-free, double free, uninitialized memory, unsafe copy/format operations
 - `memory_leak`: allocation/free imbalance, missing cleanup, refcount imbalance, `realloc` failure handling
-- `abi_layout`: struct/union/enum/typedef layout, packing, alignment, exported symbol, or binary interface change
 - `concurrency`: lock/unlock asymmetry, race condition, atomic/refcount behavior, thread/timer/interrupt interaction
-- `error_handling`: changed return value, error code, `goto error`, `NULL` handling, cleanup path
 - `ownership_lifetime`: ownership transfer, init/destroy order, retain/release, object lifetime across callbacks
 - `macro_config`: macro default, feature flag, platform conditional, build-time behavior
 - `protocol_compatibility`: wire format, version, endian, opcode, field meaning, persistent data compatibility
@@ -283,7 +264,6 @@ Confidence:
 - `callback_dispatch`: function pointer table, ops table, handler registration, dispatch table
 - `performance_resource`: CPU, memory peak, file/socket/thread/timer resources, loop complexity, lock contention
 - `security_boundary`: auth, permission, input validation, path/command injection, integer or buffer overflow
-- `build_deploy`: Makefile/CMake/link flags, exported symbols, install/deploy behavior, default build options
 
 ## 内存泄漏关注点
 
@@ -301,7 +281,7 @@ Confidence:
 
 ## Report Style
 
-The output report must be Chinese Markdown, but technical terms should stay in English when that is clearer. Prefer mixed wording such as `changed symbols`, `subsystem`, `legacy path`, `memory-lifetime`, `ABI`, `callback`, `dispatch table`, `compile database`, and `CodeGraph`.
+The output report must be Chinese Markdown, but technical terms should stay in English when that is clearer. Prefer mixed wording such as `changed symbols`, `subsystem`, `legacy path`, `memory-lifetime`, `callback`, `dispatch table`, `compile database`, and `CodeGraph`.
 
 Keep these sections unless there is a strong reason to add more:
 

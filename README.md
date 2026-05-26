@@ -19,7 +19,7 @@
 
 ## 解决什么问题
 
-在大型 C 工程中，新功能开发经常会修改公共接口、公共模块、宏、结构体、回调表、状态机或生命周期逻辑，从而影响已有功能。这个 skill 把这类回归风险分析固化为一个可重复流程：
+在大型 C 工程中，新功能开发经常会修改公共模块、宏、回调表、状态机或生命周期逻辑，从而影响已有功能。这个 skill 把这类回归风险分析固化为一个可重复流程：
 
 ```text
 git diff
@@ -161,9 +161,6 @@ repo/
 示例配置：
 
 ```yaml
-public_interfaces:
-  - include/
-  - sdk/include/
 legacy_paths:
   - legacy/
   - stable/
@@ -254,7 +251,7 @@ subsys/net/include/
 - `Suggested Regression Checks`
 - `Limitations`
 
-报告语言风格为中文描述为主，但专业术语保留英文，例如 `changed symbols`、`subsystem`、`legacy path`、`memory-lifetime`、`ABI`、`callback`、`dispatch table`、`compile database`、`CodeGraph`。这样便于工程团队阅读，也避免强行翻译造成歧义。
+报告语言风格为中文描述为主，但专业术语保留英文，例如 `changed symbols`、`subsystem`、`legacy path`、`memory-lifetime`、`callback`、`dispatch table`、`compile database`、`CodeGraph`。这样便于工程团队阅读，也避免强行翻译造成歧义。
 
 报告会明确区分三层分析：
 
@@ -264,51 +261,16 @@ subsys/net/include/
 
 其中 `Affected Subsystem Candidates` 不只列出命中数量，还会按 subsystem 展开：
 
-- `Impact reason`：说明为什么该 subsystem 可能受影响，例如 public interface 变更、legacy path 引用、high-risk architecture path、memory-sensitive path 或跨 subsystem reference。
+- `Impact reason`：说明为什么该 subsystem 可能受影响，例如 legacy path 引用、high-risk architecture path、memory-sensitive path 或跨 subsystem reference。
 - `Changed files`：列出本次提交在该 subsystem 内直接修改的文件。
 - `Referenced/impact files`：列出 CodeGraph 或 fallback 搜索命中的引用文件，用于定位老功能调用链。
 - `Symbols`：列出把本次修改与该 subsystem 关联起来的 changed symbol。
-- `Risk categories`：列出 `memory_leak`、`abi_layout`、`concurrency`、`protocol_compatibility` 等架构风险类别。
-- `Suggested checks`：给出该 subsystem 推荐的 legacy tests、ABI/layout review、memory-lifetime check、protocol compatibility 验证等检查动作。
+- `Risk categories`：列出 `memory_leak`、`concurrency`、`protocol_compatibility` 等架构风险类别。
+- `Suggested checks`：给出该 subsystem 推荐的 legacy tests、memory-lifetime check、protocol compatibility 验证等检查动作。
 
 弱模型或内网 Claude Code 可以优先读取 `.impact-scan/subsystem_analysis.json`，再把其中内容整理进最终 Markdown 报告。
 
 ## 检查项说明
-
-### 公共接口变化
-
-检查内容：
-
-- `.h` 文件
-- `include/`
-- `public/`
-- `api/`
-- `sdk/include/`
-- 共享 `common/` 路径
-
-风险原因：
-
-已有功能可能依赖这些稳定声明、宏、结构体或函数签名。
-
-### ABI 和结构体布局风险
-
-风险类别：`abi_layout`
-
-检查内容：
-
-- `struct`
-- `union`
-- `enum`
-- `typedef`
-- 字段顺序变化
-- 字段类型变化
-- `sizeof`
-- packing / alignment
-- 导出符号或可见性变化
-
-风险原因：
-
-即使函数名不变，二进制布局变化也可能破坏老模块、动态库接口或跨模块数据访问。
 
 ### 内存安全
 
@@ -364,23 +326,6 @@ subsys/net/include/
 风险原因：
 
 小范围改动也可能引入竞态、死锁、引用计数原子性问题或对象生命周期错乱。
-
-### 错误处理路径
-
-风险类别：`error_handling`
-
-检查内容：
-
-- return 值
-- errno / error code
-- `goto error`
-- `NULL` 判断
-- cleanup 路径
-- retry / failure 行为
-
-风险原因：
-
-老功能可能依赖历史错误码、返回值语义、容错行为或 cleanup 副作用。
 
 ### 宏和配置行为
 
@@ -491,23 +436,6 @@ subsys/net/include/
 
 安全边界相关改动即使功能可用，也应该按高风险处理。
 
-### 构建和部署行为
-
-风险类别：`build_deploy`
-
-检查内容：
-
-- Makefile
-- CMake
-- link flags
-- exported symbols
-- install / deploy 行为
-- 默认编译选项
-
-风险原因：
-
-C 工程经常存在多个产品形态和构建变体，构建配置变化可能只在部分环境暴露问题。
-
 ## 风险评分
 
 默认风险等级：
@@ -523,17 +451,14 @@ low     score 0-3
 ```text
 memory_safety           +5
 memory_leak             +5
-abi_layout              +5
 security_boundary       +5
 concurrency             +4
 ownership_lifetime      +4
 protocol_compatibility  +4
 state_machine_timing    +4
 callback_dispatch       +4
-error_handling          +3
 macro_config            +3
 performance_resource    +3
-build_deploy            +3
 ```
 
 评分只是 triage 信号，不等价于已经证明存在缺陷。

@@ -16,21 +16,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 
-PUBLIC_PATH_RE = re.compile(
-    r"(^|/)(include|inc|common|public|api|lib|platform|protocol|sdk|adapter)(/|$)",
-    re.I,
-)
-BUILD_FILE_RE = re.compile(r"(^|/)(makefile|cmakelists\.txt|.*\.mk|.*\.cmake)$", re.I)
 C_FILE_RE = re.compile(r"\.(c|h)$", re.I)
 HEADER_RE = re.compile(r"\.h$", re.I)
 IDENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
-FUNC_DEF_RE = re.compile(
-    r"^\s*(?:[A-Za-z_][\w\s\*\(\),]*\s+)+(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:\{|$)"
-)
-DECL_RE = re.compile(
-    r"^\s*(?:extern\s+)?(?:[A-Za-z_][\w\s\*\(\),]*\s+)+(?P<name>[A-Za-z_]\w*)\s*\([^{}]*\)\s*;"
-)
-TYPE_RE = re.compile(r"\b(struct|union|enum|typedef)\b")
 MACRO_RE = re.compile(r"^\s*#\s*(define|if|ifdef|ifndef|elif|undef)\b")
 CALLBACK_RE = re.compile(r"\b(callback|cb|ops|vtable|handler|hook)\b|(?:\*\s*[A-Za-z_]\w*\s*\()", re.I)
 GLOBAL_RE = re.compile(r"^\s*(?:extern\s+)?[A-Za-z_][\w\s\*]*\s+[A-Za-z_]\w*(?:\s*=|\s*;)")
@@ -39,13 +27,10 @@ MEMORY_RE = re.compile(
     r"memcpy|memmove|memset|sizeof)\b",
     re.I,
 )
-SEMANTIC_RE = re.compile(r"\b(return|NULL|nullptr|errno|error|goto|timeout|retry|len|length|size|owner|lock|unlock)\b", re.I)
 ARCH_RISK_PATTERNS = [
-    ("memory_safety", re.compile(r"\b(memcpy|memmove|memset|strcpy|strncpy|strcat|sprintf|snprintf|overflow|underflow|bounds?|index|len|length|size)\b", re.I)),
+    ("memory_safety", re.compile(r"\b(memcpy|memmove|memset|strcpy|strncpy|strcat|sprintf|snprintf|overflow|underflow|bounds?)\b", re.I)),
     ("memory_leak", re.compile(r"\b(malloc|calloc|realloc|strdup|free|release|destroy|cleanup|refcount|refcnt|retain|alloc|dealloc)\b", re.I)),
-    ("abi_layout", re.compile(r"\b(struct|union|enum|typedef|sizeof|pragma\s+pack|packed|__attribute__|dllexport|visibility|export)\b", re.I)),
-    ("concurrency", re.compile(r"\b(mutex|lock|unlock|spin|rwlock|atomic|thread|task|timer|interrupt|semaphore|sem_|wait|signal|pthread)\b", re.I)),
-    ("error_handling", re.compile(r"\b(return|errno|error|err_|goto|fail|cleanup|NULL|nullptr|invalid|denied)\b", re.I)),
+    ("concurrency", re.compile(r"(?<!\w)(pthread_mutex|mutex_|spin|rwlock|atomic|thread|task|timer|interrupt|semaphore|sem_|wait|signal|pthread)", re.I)),
     ("ownership_lifetime", re.compile(r"\b(owner|ownership|refcount|refcnt|retain|release|destroy|init|deinit|close|open|cleanup|lifetime)\b", re.I)),
     ("macro_config", re.compile(r"^\s*#\s*(define|if|ifdef|ifndef|elif|undef)\b|\b(CONFIG_|FEATURE_|ENABLE_|DISABLE_)\w*", re.I)),
     ("protocol_compatibility", re.compile(r"\b(protocol|version|endian|hton|ntoh|tlv|json|field|opcode|message|packet|frame|cmd_|schema)\b", re.I)),
@@ -53,14 +38,11 @@ ARCH_RISK_PATTERNS = [
     ("callback_dispatch", re.compile(r"\b(callback|cb|ops|vtable|handler|dispatch|command|cmd_table|register|unregister|hook)\b|(?:\*\s*[A-Za-z_]\w*\s*\()", re.I)),
     ("performance_resource", re.compile(r"\b(cpu|memory|socket|fd|file|thread|timer|poll|select|epoll|loop|while|for|cache|alloc|queue)\b", re.I)),
     ("security_boundary", re.compile(r"\b(auth|permission|privilege|token|password|credential|path|command|injection|validate|sanitize|overflow|acl|role)\b", re.I)),
-    ("build_deploy", re.compile(r"\b(makefile|cmakelists|target_link_libraries|install|deploy|link|library|ldflags|cflags|symbol|export)\b", re.I)),
 ]
 ARCH_CATEGORY_WEIGHTS = {
     "memory_safety": 5,
     "memory_leak": 5,
-    "abi_layout": 5,
     "concurrency": 4,
-    "error_handling": 3,
     "ownership_lifetime": 4,
     "macro_config": 3,
     "protocol_compatibility": 4,
@@ -68,7 +50,6 @@ ARCH_CATEGORY_WEIGHTS = {
     "callback_dispatch": 4,
     "performance_resource": 3,
     "security_boundary": 5,
-    "build_deploy": 3,
 }
 
 
@@ -78,8 +59,6 @@ def detect_risk_categories(evidence, file_path, kind):
     for name, pattern in ARCH_RISK_PATTERNS:
         if pattern.search(text) and name not in categories:
             categories.append(name)
-    if kind == "type" and "abi_layout" not in categories:
-        categories.append("abi_layout")
     if kind == "macro-or-conditional" and "macro_config" not in categories:
         categories.append("macro_config")
     if kind == "callback-or-function-pointer" and "callback_dispatch" not in categories:
@@ -108,7 +87,6 @@ def default_scan_config(scope_path=None):
     scope_path = normalize(scope_path or "").strip().strip("/")
     return {
         "scope_path": scope_path,
-        "public_interfaces": [scoped_prefix(scope_path, p) for p in ["include/", "inc/", "common/", "public/", "api/", "sdk/include/"]],
         "legacy_paths": [scoped_prefix(scope_path, p) for p in ["legacy/", "old/", "stable/"]],
         "high_risk_paths": [scoped_prefix(scope_path, p) for p in ["platform/", "protocol/", "storage/", "upgrade/", "adapter/", "common/"]],
         "memory_sensitive_paths": [scoped_prefix(scope_path, p) for p in ["memory/", "mem/", "buffer/", "session/", "core/"]],
@@ -149,7 +127,6 @@ def load_scan_config(repo, scope_path=None):
                 loaded = parse_simple_yaml_lists(path.read_text(encoding="utf-8"))
                 break
     for key in (
-        "public_interfaces",
         "legacy_paths",
         "high_risk_paths",
         "memory_sensitive_paths",
@@ -200,7 +177,7 @@ def configured_subsystem_for(path, config):
 
 
 def apply_config_to_file(item, config):
-    item["is_public_interface"] = item["is_public_path"] or path_matches_prefix(item["path"], config["public_interfaces"])
+    item["is_public_interface"] = False
     item["is_legacy_path"] = path_matches_prefix(item["path"], config["legacy_paths"])
     item["is_high_risk_path"] = path_matches_prefix(item["path"], config["high_risk_paths"])
     item["is_memory_sensitive_path"] = path_matches_prefix(item["path"], config["memory_sensitive_paths"])
@@ -218,8 +195,8 @@ def changed_file(path, status, added=0, deleted=0):
         "deleted": deleted,
         "is_c": bool(C_FILE_RE.search(path)),
         "is_header": bool(HEADER_RE.search(path)),
-        "is_public_path": bool(PUBLIC_PATH_RE.search(path)),
-        "is_build_file": bool(BUILD_FILE_RE.search(path)),
+        "is_public_path": False,
+        "is_build_file": False,
         "is_public_interface": False,
         "is_legacy_path": False,
         "is_high_risk_path": False,
@@ -406,19 +383,8 @@ def extract_symbols(repo, commit_range, max_symbols, config=None):
             match = re.match(r"^\s*#\s*(?:define|undef)\s+([A-Za-z_]\w*)", stripped)
             if match:
                 name = match.group(1)
-        elif TYPE_RE.search(stripped):
-            kind = "type"
-            ids = IDENT_RE.findall(stripped)
-            for token in ids:
-                if token not in ("typedef", "struct", "union", "enum", "const", "volatile"):
-                    name = token
-                    break
         else:
-            match = FUNC_DEF_RE.match(stripped) or DECL_RE.match(stripped)
-            if match:
-                kind = "function"
-                name = match.group("name")
-            elif CALLBACK_RE.search(stripped):
+            if CALLBACK_RE.search(stripped):
                 kind = "callback-or-function-pointer"
                 ids = IDENT_RE.findall(stripped)
                 if ids:
@@ -549,12 +515,6 @@ def gather_references(repo, symbols, limit, codegraph, config=None):
 def score_file(item):
     score = 0
     reasons = []
-    if item["is_header"]:
-        score += 4
-        reasons.append("header file changed")
-    if item.get("is_public_interface") or item["is_public_path"]:
-        score += 3
-        reasons.append("public/shared interface path changed")
     if item.get("is_high_risk_path"):
         score += 3
         reasons.append("architecturally high-risk path changed")
@@ -564,9 +524,6 @@ def score_file(item):
     if item.get("is_memory_sensitive_path"):
         score += 2
         reasons.append("memory-sensitive path changed")
-    if item["is_build_file"]:
-        score += 3
-        reasons.append("build or feature switch file changed")
     if item["added"] + item["deleted"] >= 80:
         score += 2
         reasons.append("large change size")
@@ -576,13 +533,7 @@ def score_file(item):
 def score_symbol(symbol, refs, config=None):
     score = 0
     reasons = []
-    if symbol["kind"] == "function":
-        score += 4
-        reasons.append("function declaration or definition changed")
-    elif symbol["kind"] == "type":
-        score += 4
-        reasons.append("struct/union/enum/typedef changed")
-    elif symbol["kind"] == "macro-or-conditional":
+    if symbol["kind"] == "macro-or-conditional":
         score += 3
         reasons.append("macro or conditional compilation changed")
     elif symbol["kind"] == "callback-or-function-pointer":
@@ -599,15 +550,9 @@ def score_symbol(symbol, refs, config=None):
         if weight:
             score += weight
             reasons.append("architecture risk {} detected".format(category))
-    if SEMANTIC_RE.search(symbol.get("evidence", "")):
-        score += 2
-        reasons.append("semantic behavior keyword changed")
     if config and path_matches_prefix(symbol["file"], config["memory_sensitive_paths"]):
         score += 3
         reasons.append("memory-sensitive path changed")
-    if PUBLIC_PATH_RE.search(symbol["file"]) or (config and path_matches_prefix(symbol["file"], config["public_interfaces"])):
-        score += 3
-        reasons.append("symbol is in public/shared path")
     if config and path_matches_prefix(symbol["file"], config["high_risk_paths"]):
         score += 3
         reasons.append("symbol is in architecturally high-risk path")
@@ -713,8 +658,6 @@ def checks_for_categories(categories, legacy_hit):
     checks = []
     if legacy_hit:
         checks.append("运行该 subsystem 的 legacy tests，重点验证老功能路径和兼容行为。")
-    if "abi_layout" in categories:
-        checks.append("Review ABI/layout compatibility，检查 public structs、enums、typedefs 和 exported headers。")
     if "memory_safety" in categories or "memory_leak" in categories or "ownership_lifetime" in categories:
         checks.append("执行 memory-lifetime 检查，覆盖 allocation/free、refcount、cleanup 和 error paths。")
     if "concurrency" in categories:
@@ -729,8 +672,6 @@ def checks_for_categories(categories, legacy_hit):
         checks.append("检查 CPU、memory、file/socket/thread/timer resources 和 loop complexity。")
     if "security_boundary" in categories:
         checks.append("Review auth、permission、input validation 和 path/command handling。")
-    if "build_deploy" in categories:
-        checks.append("验证 build variants、link flags、exported symbols 和 deployment packaging。")
     if not checks:
         checks.append("针对该 subsystem 的 changed files 和 referenced files 运行 focused regression tests。")
     return checks
@@ -760,8 +701,6 @@ def build_subsystem_analysis(files, refs, risks, impact_paths, config):
         entry = entry_for(name)
         entry["changed_files"].append(item["path"])
         entry["why_impacted"].append("本次提交直接修改了该 subsystem 内文件 (direct changed file)")
-        if item.get("is_public_interface"):
-            entry["why_impacted"].append("修改了 public interface file，可能影响老功能的 include/API contract")
         if item.get("is_high_risk_path"):
             entry["why_impacted"].append("修改了 high-risk architecture path，需要关注跨模块行为")
         if item.get("is_memory_sensitive_path"):
@@ -837,12 +776,9 @@ def write_markdown_report(path, text):
 def manual_review_items(risks):
     review = []
     keywords = (
-        "header file changed",
-        "struct/union/enum/typedef changed",
         "macro or conditional compilation changed",
         "callback/function pointer pattern changed",
         "memory allocation/lifetime related change",
-        "semantic behavior keyword changed",
         "architecture risk",
     )
     for item in risks:
@@ -883,7 +819,6 @@ def markdown_report(
         "- fallback 命中的 symbol 数: {}".format(codegraph["fallback_used_for_symbols"]),
         "- changed files: {}".format(len(files)),
         "- changed symbols: {}".format(len(symbols)),
-        "- public interface paths: {}".format(", ".join(config["public_interfaces"][:8])),
         "- legacy paths: {}".format(", ".join(config["legacy_paths"][:8])),
         "",
         "## 分析分层",
@@ -1009,9 +944,8 @@ def markdown_report(
         [
             "",
             "## 建议回归检查",
-            "- Review 上方列出的 high-risk public headers 和 shared modules。",
             "- 针对受影响 subsystem 候选运行 legacy tests。",
-            "- 人工检查 struct layout、enum values、macros、callbacks 和 function pointer tables。",
+            "- 人工检查 macros、callbacks、function pointer tables 和 ownership/lifetime paths。",
             "- 对 memory-lifetime 变更执行内存泄漏专项检查，尤其关注分配/释放和错误路径。",
             "- 对引用范围较广的 symbol，每个受影响 subsystem 至少验证一条 legacy feature path。",
             "",
