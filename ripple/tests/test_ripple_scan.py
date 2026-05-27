@@ -486,6 +486,58 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("interactive guided", agent_text)
         self.assertIn("wait for confirmation", agent_text)
 
+    def test_pointer_alias_lifetime_scores_high_and_requires_review(self):
+        symbol = scan.changed_symbol(
+            "register_cb",
+            "core/session/session.c",
+            "pointer-alias-lifetime",
+            "register_cb(on_done, session); /* later delivered as void *opaque */",
+        )
+
+        score, reasons = scan.score_symbol(symbol, None, scan.default_scan_config())
+        review = scan.manual_review_items([
+            scan.risk_item(symbol["name"], symbol["kind"], score, reasons, [symbol["file"]], symbol["risk_categories"])
+        ])
+
+        self.assertIn("pointer_alias_lifetime", symbol["risk_categories"])
+        self.assertGreaterEqual(score, 8)
+        self.assertTrue(any("opaque" in reason.lower() or "pointer alias" in reason.lower() for reason in reasons))
+        self.assertTrue(review)
+
+    def test_pointer_alias_report_section_is_present(self):
+        config = scan.default_scan_config()
+        symbol = scan.changed_symbol(
+            "ctx",
+            "core/session/session.c",
+            "pointer-alias-lifetime",
+            "owner->session = ctx;",
+        )
+        risk = scan.risk_item(
+            symbol["name"],
+            symbol["kind"],
+            10,
+            ["pointer alias/field ownership lifetime change"],
+            [symbol["file"]],
+            symbol["risk_categories"],
+        )
+
+        text = scan.markdown_report(
+            "HEAD~1..HEAD",
+            scan.codegraph_status("off"),
+            [],
+            [symbol],
+            [],
+            [risk],
+            {"subsystems": []},
+            config,
+            [],
+            scan.build_architecture_risk_summary([risk]),
+            [],
+        )
+
+        self.assertIn("指针别名与生命周期关注点", text)
+        self.assertIn("不要只按变量名", text)
+
 
 if __name__ == "__main__":
     unittest.main()

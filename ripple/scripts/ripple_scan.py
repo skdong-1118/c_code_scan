@@ -42,6 +42,16 @@ MEMORY_RE = re.compile(
     r"enqueue|dequeue|cache_(add|insert|remove|delete)|map_(put|insert|remove|erase))\b",
     re.I,
 )
+POINTER_ALIAS_RE = re.compile(
+    r"(\bvoid\s*\*\s*(opaque|ctx|context|user_data|userdata|priv|private|cookie)\b)"
+    r"|(\b(callback|cb|handler|hook|thread|timer|task|work|async|register|unregister)\b.*\b(opaque|ctx|context|user_data|userdata|priv|private|cookie)\b)"
+    r"|(->\s*[A-Za-z_]\w*\s*=\s*[A-Za-z_]\w*)"
+    r"|(\b[A-Za-z_]\w*\s*=\s*[A-Za-z_]\w*\s*;)"
+    r"|(\b(list_(add|add_tail)|hlist_add|hash_(add|insert)|map_(put|insert)|queue_push|enqueue|cache_(add|insert)|rb_(insert|link)|tree_(insert))\b)"
+    r"|(\b(thread_create|pthread_create|timer_start|timer_add|schedule_work|queue_work|callback_register|register_cb)\b)",
+    re.I,
+)
+FIELD_ACCESS_RE = re.compile(r"(->|\.)\s*[A-Za-z_]\w*\b|\boffsetof\s*\(|\bcontainer_of\s*\(|\bsizeof\s*\(", re.I)
 SEMANTIC_RE = re.compile(r"\b(return|NULL|nullptr|errno|error|goto|timeout|retry|len|length|size|owner|lock|unlock)\b", re.I)
 ARCH_RISK_PATTERNS = [
     ("memory_safety", re.compile(r"\b(memcpy|memmove|memset|strcpy|strncpy|strcat|sprintf|snprintf|overflow|underflow|bounds?|index|len|length|size)\b", re.I)),
@@ -50,6 +60,7 @@ ARCH_RISK_PATTERNS = [
     ("concurrency", re.compile(r"\b(mutex|lock|unlock|spin|rwlock|atomic|thread|task|timer|interrupt|semaphore|sem_|wait|signal|pthread)\b", re.I)),
     ("error_handling", re.compile(r"\b(return|errno|error|err_|goto|fail|cleanup|NULL|nullptr|invalid|denied)\b", re.I)),
     ("ownership_lifetime", re.compile(r"\b(owner|ownership|refcount|refcnt|retain|release|destroy|init|deinit|close|open|cleanup|lifetime|list_(add|add_tail|del|del_init)|hlist_(add|del)|rb_(insert|erase|link)|tree_(insert|remove|erase|delete)|hash_(add|del|remove|insert)|queue_(push|pop|remove)|enqueue|dequeue|cache_(add|insert|remove|delete)|map_(put|insert|remove|erase))\b", re.I)),
+    ("pointer_alias_lifetime", re.compile(r"\b(void\s*\*|opaque|ctx|context|user_data|userdata|priv|private|cookie|container_of|offsetof|list_(add|add_tail)|hlist_add|hash_(add|insert)|map_(put|insert)|queue_push|enqueue|cache_(add|insert)|thread_create|pthread_create|timer_start|schedule_work|queue_work|callback_register|register_cb)\b|->\s*[A-Za-z_]\w*\s*=", re.I)),
     ("macro_config", re.compile(r"^\s*#\s*(define|if|ifdef|ifndef|elif|undef)\b|\b(CONFIG_|FEATURE_|ENABLE_|DISABLE_)\w*", re.I)),
     ("protocol_compatibility", re.compile(r"\b(protocol|version|endian|hton|ntoh|tlv|json|field|opcode|message|packet|frame|cmd_|schema)\b", re.I)),
     ("state_machine_timing", re.compile(r"\b(state|event|timer|timeout|retry|transition|start|stop|order|sequence|schedule|delay)\b", re.I)),
@@ -65,6 +76,7 @@ ARCH_CATEGORY_WEIGHTS = {
     "concurrency": 4,
     "error_handling": 3,
     "ownership_lifetime": 4,
+    "pointer_alias_lifetime": 5,
     "macro_config": 3,
     "protocol_compatibility": 4,
     "state_machine_timing": 4,
@@ -89,6 +101,10 @@ def detect_risk_categories(evidence, file_path, kind):
         categories.append("callback_dispatch")
     if kind == "memory-lifetime":
         for name in ("memory_leak", "ownership_lifetime"):
+            if name not in categories:
+                categories.append(name)
+    if kind == "pointer-alias-lifetime":
+        for name in ("pointer_alias_lifetime", "ownership_lifetime"):
             if name not in categories:
                 categories.append(name)
     return categories
@@ -609,6 +625,11 @@ def extract_symbols(repo, commit_range, max_symbols, config=None):
             kind = "memory-lifetime"
             ids = IDENT_RE.findall(stripped)
             name = ids[0] if ids else "memory_change"
+        elif POINTER_ALIAS_RE.search(stripped) or FIELD_ACCESS_RE.search(stripped) and re.search(r"\b(void|struct|union|typedef|memcpy|memmove|memset)\b|->\s*[A-Za-z_]\w*\s*=", stripped, re.I):
+            kind = "pointer-alias-lifetime"
+            ids = IDENT_RE.findall(stripped)
+            preferred = [token for token in ids if token.lower() not in ("void", "struct", "union", "const", "volatile", "static", "return", "sizeof", "offsetof", "container_of")]
+            name = preferred[0] if preferred else "pointer_alias_change"
         elif MACRO_RE.search(stripped):
             kind = "macro-or-conditional"
             match = re.match(r"^\s*#\s*(?:define|undef)\s+([A-Za-z_]\w*)", stripped)
@@ -805,6 +826,17 @@ def score_symbol(symbol, refs, config=None):
             reasons.append("container ownership/lifetime related change")
         else:
             reasons.append("memory allocation/lifetime related change")
+    elif symbol["kind"] == "pointer-alias-lifetime":
+        score += 5
+        evidence = symbol.get("evidence", "")
+        if re.search(r"\b(opaque|ctx|context|user_data|userdata|priv|private|cookie|callback|register_cb|callback_register)\b", evidence, re.I):
+            reasons.append("callback opaque/context pointer alias lifetime change")
+        elif re.search(r"\b(thread_create|pthread_create|timer_start|schedule_work|queue_work|async|task|work)\b", evidence, re.I):
+            reasons.append("async/thread/timer pointer escape lifetime change")
+        elif re.search(r"\b(list_|hlist_|hash_|map_|queue_|enqueue|cache_|rb_|tree_)", evidence, re.I):
+            reasons.append("container pointer escape ownership change")
+        else:
+            reasons.append("pointer alias/field ownership lifetime change")
     for category in symbol.get("risk_categories", []):
         weight = ARCH_CATEGORY_WEIGHTS.get(category, 0)
         if weight:
@@ -928,6 +960,8 @@ def checks_for_categories(categories, legacy_hit):
         checks.append("Review ABI/layout compatibility，检查 public structs、enums、typedefs 和 exported headers。")
     if "memory_safety" in categories or "memory_leak" in categories or "ownership_lifetime" in categories:
         checks.append("执行 memory-lifetime 检查，覆盖 allocation/free、refcount、cleanup 和 error paths。")
+    if "pointer_alias_lifetime" in categories:
+        checks.append("执行 pointer alias/lifetime 检查：按对象类型、字段访问、ownership API 和逃逸点追踪，不依赖变量名。")
     if "concurrency" in categories:
         checks.append("压测 concurrency paths，并 review lock/unlock、atomic、timer 和 thread interactions。")
     if "protocol_compatibility" in categories:
@@ -1053,6 +1087,10 @@ def manual_review_items(risks):
         "macro or conditional compilation changed",
         "callback/function pointer pattern changed",
         "memory allocation/lifetime related change",
+        "pointer alias/field ownership lifetime change",
+        "callback opaque/context pointer alias lifetime change",
+        "async/thread/timer pointer escape lifetime change",
+        "container pointer escape ownership change",
         "semantic behavior keyword changed",
         "architecture risk",
     )
@@ -1202,6 +1240,7 @@ def markdown_report(
         lines.append("- deterministic rules 未发现必须人工 Review 的项目。")
 
     memory_items = [item for item in risks if item["kind"] == "memory-lifetime"]
+    pointer_alias_items = [item for item in risks if item["kind"] == "pointer-alias-lifetime" or "pointer_alias_lifetime" in item.get("risk_categories", [])]
     lines.extend(["", "## 内存泄漏关注点", ""])
     if memory_items:
         for item in memory_items[:20]:
@@ -1225,6 +1264,7 @@ def markdown_report(
             "- 针对受影响 subsystem 候选运行 legacy tests。",
             "- 人工检查 struct layout、enum values、macros、callbacks 和 function pointer tables。",
             "- 对 memory-lifetime 变更执行内存泄漏专项检查，尤其关注分配/释放和错误路径。",
+            "- 对 pointer alias/lifetime 变更按对象类型、字段访问、ownership API、callback opaque 和异步逃逸点做人工 review。",
             "- 对引用范围较广的 symbol，每个受影响 subsystem 至少验证一条 legacy feature path。",
             "",
             "## 局限性",
@@ -1239,6 +1279,21 @@ def markdown_report(
             lines.append("- {}".format(error))
     return "\n".join(lines) + "\n"
 
+    lines.extend(["", "## 指针别名与生命周期关注点", ""])
+    if pointer_alias_items:
+        for item in pointer_alias_items[:20]:
+            lines.append("- `{}`: {}".format(item["subject"], "; ".join(item["reasons"])))
+        lines.extend(
+            [
+                "- 不要只按变量名判断安全性；按对象类型、struct 字段、ownership API 和逃逸点追踪。",
+                "- 检查 `void *opaque/user_data/ctx/priv` 是否 cast 回变更对象类型，callback 触发时对象是否仍然存活。",
+                "- 检查对象是否进入 global、struct field、list/hash/map/queue/cache、thread、timer、workqueue 或 callback 注册表。",
+                "- 检查新增/修改指针字段是否同步更新 destroy/copy/clone/error-cleanup 路径，避免泄漏、UAF、double free 或浅拷贝。",
+                "- 对 `memcpy/memset/sizeof/offsetof/container_of` 作用于含指针/refcount/lock/list node 的结构体进行人工 review。",
+            ]
+        )
+    else:
+        lines.append("- deterministic rules 未发现 pointer-alias-lifetime 类型的 changed symbol。")
 
 def _step_discover(repo, out, config, codegraph, args, focus):
     """Step 1: Scope discovery. Output changed files and inferred subsystems."""

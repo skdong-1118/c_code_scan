@@ -179,6 +179,7 @@ Only expand references for:
 - high-risk symbols (score >= 8)
 - public interface symbols
 - memory-lifetime symbols
+- pointer-alias/lifetime symbols, especially `void *opaque/user_data/ctx/priv`, struct field assignments, container inserts, callback/thread/timer escape points
 
 Do NOT expand all changed symbols. This keeps reference search focused and fast:
 
@@ -238,6 +239,7 @@ The report includes:
 - **Impact Paths**: symbol → file → subsystem chains
 - **必须人工 Review**: mandatory manual review items
 - **内存泄漏关注点**: memory-lifetime specific findings
+- **指针别名与生命周期关注点**: type/field/ownership/escape-point checks that do not rely on variable names
 - **建议回归检查**: suggested regression tests
 - **局限性**: scan limitations and confidence caveats
 
@@ -254,6 +256,7 @@ focus_symbols:
   - session_alloc
 focus_risks:
   - memory_leak
+  - pointer_alias_lifetime
   - abi_layout
 ignore_paths:
   - tests/
@@ -321,6 +324,9 @@ low_risk_paths:
 - global data changed: +2
 - memory allocation/lifetime change: +5
 - container ownership change (list/tree/hash/queue/map/cache): +5
+- pointer alias / escaped lifetime change: +5
+- callback opaque/context pointer alias change: +5
+- async/thread/timer pointer escape change: +5
 - semantic behavior keyword changed: +2
 - symbol in public/shared path: +3
 - symbol in high-risk path: +3
@@ -339,6 +345,7 @@ low_risk_paths:
 | `security_boundary` | +5 |
 | `concurrency` | +4 |
 | `ownership_lifetime` | +4 |
+| `pointer_alias_lifetime` | +5 |
 | `protocol_compatibility` | +4 |
 | `state_machine_timing` | +4 |
 | `callback_dispatch` | +4 |
@@ -367,7 +374,7 @@ Deterministic rules identify risk signals from names, paths, diff content, and c
 
 ### Manual Review 层
 
-For risks that static tools cannot resolve — pointer aliasing, ownership transfer, callback/async flow, struct field passing, error cleanup paths — write items into `必须人工 Review`. This reduces manual review scope, not replaces architect judgment.
+For risks that static tools cannot resolve — pointer aliasing, ownership transfer, callback/async flow, struct field passing, error cleanup paths — write items into `必须人工 Review`. This reduces manual review scope, not replaces architect judgment. For C pointer risks, do not rely on local variable names; track the object type, struct fields, ownership APIs, and escape points instead.
 
 ## Architecture Risk Categories
 
@@ -379,6 +386,7 @@ For risks that static tools cannot resolve — pointer aliasing, ownership trans
 | `concurrency` | lock/unlock asymmetry, race, atomic/refcount, thread/timer/interrupt |
 | `error_handling` | return value, error code, goto error, NULL check, cleanup path |
 | `ownership_lifetime` | ownership transfer, init/destroy order, retain/release, container insert/remove |
+| `pointer_alias_lifetime` | same object under different pointer names, void* opaque/user_data/ctx, field/global/container escape, callback/thread/timer lifetime |
 | `macro_config` | macro default, feature flag, platform conditional, build-time behavior |
 | `protocol_compatibility` | wire format, version, endian, opcode, field meaning, persistent data |
 | `state_machine_timing` | state transition, event order, timer, timeout, retry, start/stop |
@@ -400,6 +408,32 @@ When report flags `memory-lifetime`, do not treat it as a normal function change
 - callback cleanup and module unload paths
 - repeated-call or long-running legacy paths
 
+## Pointer Alias / Lifetime Focus
+
+C pointer risks must be checked by object identity and lifetime, not by variable name. A changed object may appear as `s`, `ctx`, `priv`, `opaque`, `user_data`, a struct field, a global, or a container element. When report flags `pointer_alias_lifetime`, require or suggest this focused review strategy:
+
+### Tracking priority
+
+1. **Type / struct identity**: search `struct xxx *`, `xxx_t *`, casts from `void *`, `sizeof(struct xxx)`, `offsetof(struct xxx, field)`, and `container_of(..., xxx, ...)`.
+2. **Field-level access**: search `->field`, `.field`, added/removed pointer fields, refcount fields, lock/list-node fields, length/capacity fields, and copy/reset code.
+3. **Ownership API pairs**: match `create/new/alloc/init/get/ref/retain/acquire/open` with `free/destroy/deinit/put/unref/release/close/cleanup`.
+4. **Escape points**: inspect assignment into `obj->field`, globals/statics, list/hash/map/queue/cache/tree nodes, callback registration, thread/task/workqueue/timer arguments, and module-level registries.
+5. **Error paths**: inspect `goto fail/error/cleanup`, early `return`, partial initialization, and unregister/remove cleanup after an escaped pointer.
+
+### Mandatory high-risk patterns
+
+- `void *opaque`, `void *ctx`, `void *user_data`, `void *priv`, or `void *cookie` is cast back to a changed object type.
+- Changed object is passed into callback registration, timer, thread, async task, workqueue, or dispatch table.
+- Changed object is stored into a struct field/global/container and may outlive the current function.
+- A struct gains or changes pointer/refcount/lock/list-node fields without matching destroy/copy/clone/error-cleanup updates.
+- `memcpy`, `memset`, shallow copy, `sizeof`, `offsetof`, or `container_of` touches a struct containing pointers, refcount, lock, or list/hash node fields.
+
+### Report language rule
+
+When this risk is detected, the report must say that local variable names are not reliable evidence of safety. It should phrase the review target as:
+
+> 按对象类型、字段访问、ownership API 和逃逸点追踪该对象；不要只按变量名 grep。
+
 ## Report Style
 
 Chinese Markdown, technical terms in English when clearer. Sections:
@@ -414,6 +448,7 @@ Chinese Markdown, technical terms in English when clearer. Sections:
 - Impact Paths
 - 必须人工 Review
 - 内存泄漏关注点
+- 指针别名与生命周期关注点
 - 建议回归检查
 - 局限性
 
