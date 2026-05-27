@@ -42,8 +42,8 @@ ripple/
   SKILL.md
   agents/openai.yaml
   references/windows-deployment.md
-  scripts/c_impact_scan.py
-  tests/test_c_impact_scan.py
+  scripts/ripple_scan.py
+  tests/test_ripple_scan.py
 ```
 
 ## 环境要求
@@ -76,7 +76,7 @@ ripple/
     skills/
       ripple/
         SKILL.md
-        scripts/c_impact_scan.py
+        scripts/ripple_scan.py
 ```
 
 也可以安装到用户级目录：
@@ -112,25 +112,25 @@ C:\Users\<用户名>\.claude\skills\ripple
 Windows 示例：
 
 ```powershell
-python .claude\skills\ripple\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+python .claude\skills\ripple\scripts\ripple_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
 ```
 
 macOS / Linux 示例：
 
 ```bash
-python3 .claude/skills/ripple/scripts/c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode prefer
+python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode prefer
 ```
 
 如果要求必须使用 CodeGraph，不允许降级：
 
 ```powershell
-python .claude\skills\ripple\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode required
+python .claude\skills\ripple\scripts\ripple_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode required
 ```
 
 如果允许初始化 CodeGraph：
 
 ```powershell
-python .claude\skills\ripple\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer --init-codegraph
+python .claude\skills\ripple\scripts\ripple_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer --init-codegraph
 ```
 
 当前脚本初始化时会尝试：
@@ -164,10 +164,10 @@ codegraph init -i
 只有当你明确说“直接生成报告”、“全自动”、“不用确认”、“one-shot” 或用于 CI 时，才允许跳过中间确认。
 
 ```powershell
-python .claude\skills\ripple\scripts\c_impact_scan.py --step discover --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
-python .claude\skills\ripple\scripts\c_impact_scan.py --step triage --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
-python .claude\skills\ripple\scripts\c_impact_scan.py --step expand --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
-python .claude\skills\ripple\scripts\c_impact_scan.py --step report --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+python .claude\skills\ripple\scripts\ripple_scan.py --step discover --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+python .claude\skills\ripple\scripts\ripple_scan.py --step triage --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+python .claude\skills\ripple\scripts\ripple_scan.py --step expand --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+python .claude\skills\ripple\scripts\ripple_scan.py --step report --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
 ```
 
 四步输出的核心文件：
@@ -182,13 +182,13 @@ python .claude\skills\ripple\scripts\c_impact_scan.py --step report --range HEAD
 如果 Claude Code 在 `triage` 或 `expand` 后只在终端里回复了分析结论，没有生成 `.impact-scan/risk_report.md`，说明 agent 没有继续执行 `--step report`。可直接补跑：
 
 ```powershell
-python .claude\skills\ripple\scripts\c_impact_scan.py --step report --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+python .claude\skills\ripple\scripts\ripple_scan.py --step report --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
 ```
 
 如果前面的 JSON 中间文件也不存在，则直接运行 one-shot：
 
 ```powershell
-python .claude\skills\ripple\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+python .claude\skills\ripple\scripts\ripple_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
 ```
 
 ## Focus 配置
@@ -667,7 +667,7 @@ codegraph impact --symbol <symbol>
 运行单元测试：
 
 ```bash
-python3 -m unittest ripple/tests/test_c_impact_scan.py
+python3 -m unittest ripple/tests/test_ripple_scan.py
 ```
 
 检查 Python 3.6 语法兼容：
@@ -676,7 +676,7 @@ python3 -m unittest ripple/tests/test_c_impact_scan.py
 python3 - <<'PY'
 import ast
 from pathlib import Path
-for name in ['ripple/scripts/c_impact_scan.py', 'ripple/tests/test_c_impact_scan.py']:
+for name in ['ripple/scripts/ripple_scan.py', 'ripple/tests/test_ripple_scan.py']:
     ast.parse(Path(name).read_text(encoding='utf-8'), filename=name, feature_version=(3, 6))
 print('parsed as Python 3.6 grammar')
 PY

@@ -7,8 +7,8 @@ from pathlib import Path
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "c_impact_scan.py"
-SPEC = importlib.util.spec_from_file_location("c_impact_scan", str(SCRIPT))
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "ripple_scan.py"
+SPEC = importlib.util.spec_from_file_location("ripple_scan", str(SCRIPT))
 scan = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(scan)
 

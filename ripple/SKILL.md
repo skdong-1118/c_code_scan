@@ -74,7 +74,7 @@ Step 5: Final report → 生成最终报告
 Best for CI or when the user says "直接生成报告":
 
 ```bash
-python3 ripple/scripts/c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys/net
+python3 ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --subsystem subsys/net
 ```
 
 This runs all steps at once and outputs `.impact-scan/risk_report.md`.
@@ -135,7 +135,7 @@ The scanner will read focus from `.impact-scan-focus.yml` automatically. CLI fla
 Run the scanner to discover what changed:
 
 ```bash
-python3 ripple/scripts/c_impact_scan.py \
+python3 ripple/scripts/ripple_scan.py \
   --step discover --range HEAD~1..HEAD --subsystem subsys/net
 ```
 
@@ -159,7 +159,7 @@ Present the summary to the user for confirmation:
 Run quick triage WITHOUT reference search. This only scores changed files/symbols using deterministic rules:
 
 ```bash
-python3 ripple/scripts/c_impact_scan.py \
+python3 ripple/scripts/ripple_scan.py \
   --step triage --range HEAD~1..HEAD --subsystem subsys/net
 ```
 
@@ -183,7 +183,7 @@ Only expand references for:
 Do NOT expand all changed symbols. This keeps reference search focused and fast:
 
 ```bash
-python3 ripple/scripts/c_impact_scan.py \
+python3 ripple/scripts/ripple_scan.py \
   --step expand --range HEAD~1..HEAD --subsystem subsys/net
 ```
 
@@ -220,7 +220,7 @@ Stop here and wait for the user's confirmation unless the user explicitly select
 Generate the Chinese Markdown report from all collected artifacts:
 
 ```bash
-python3 ripple/scripts/c_impact_scan.py \
+python3 ripple/scripts/ripple_scan.py \
   --step report --range HEAD~1..HEAD --subsystem subsys/net
 ```
 
@@ -437,7 +437,7 @@ Completion rule:
 
 - Completed: `.impact-scan/risk_report.md` exists and the final reply includes its path.
 - Not completed: only terminal/chat text was produced, or only JSON artifacts were produced.
-- Recovery: run `python ripple/scripts/c_impact_scan.py --step report --range HEAD~1..HEAD` from the target repo. If report artifacts are missing, run one-shot mode without `--step`.
+- Recovery: run `python ripple/scripts/ripple_scan.py --step report --range HEAD~1..HEAD` from the target repo. If report artifacts are missing, run one-shot mode without `--step`.
 
 If CodeGraph is missing, tell the user and either stop (`--codegraph-mode required`) or continue with lower confidence (`--codegraph-mode prefer`).
 

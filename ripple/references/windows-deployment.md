@@ -44,13 +44,13 @@ For a large repository, index during a scheduled window or CI preparation step. 
 Claude Code can run the scan in preferred mode:
 
 ```powershell
-python C:\skills\ripple\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
+python C:\skills\ripple\scripts\ripple_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode prefer
 ```
 
 Use required mode when you want the scan to fail instead of silently falling back:
 
 ```powershell
-python C:\skills\ripple\scripts\c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode required
+python C:\skills\ripple\scripts\ripple_scan.py --range HEAD~1..HEAD --subsystem subsys\net --codegraph-mode required
 ```
 
 ## Path and Shell Rules
