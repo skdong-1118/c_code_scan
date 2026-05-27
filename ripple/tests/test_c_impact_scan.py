@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 
+SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "c_impact_scan.py"
 SPEC = importlib.util.spec_from_file_location("c_impact_scan", str(SCRIPT))
 scan = importlib.util.module_from_spec(SPEC)
@@ -472,6 +473,18 @@ class CImpactScanTests(unittest.TestCase):
                 self.assertIn("C 回归影响扫描报告", text)
             finally:
                 os.chdir(str(old_cwd))
+
+    def test_skill_identity_and_guidance_match_ripple(self):
+        skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        agent_text = (SKILL_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
+
+        self.assertIn("name: ripple", skill_text)
+        self.assertIn("Interactive Guided", skill_text)
+        self.assertIn("stop and wait", skill_text)
+        self.assertIn("Do not run Step 1 through Step 5 in one uninterrupted sequence", skill_text)
+        self.assertIn("display_name: Ripple", agent_text)
+        self.assertIn("interactive guided", agent_text)
+        self.assertIn("wait for confirmation", agent_text)
 
 
 if __name__ == "__main__":

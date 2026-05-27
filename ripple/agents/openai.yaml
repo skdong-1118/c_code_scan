@@ -1,0 +1,3 @@
+display_name: Ripple
+short_description: Interactive C regression impact scan for existing feature risk.
+default_prompt: In Claude Code, use the ripple skill to analyze the latest C change in interactive guided mode. Ask for focus first, run one scanner step at a time, wait for confirmation at each checkpoint, and generate the final Markdown report only after confirmation.

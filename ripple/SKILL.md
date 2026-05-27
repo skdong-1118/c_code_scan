@@ -1,5 +1,5 @@
 ---
-name: c-regression-impact-scan
+name: ripple
 description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, memory safety, ABI/layout, concurrency, error handling, ownership/lifetime, macro/config behavior, protocol compatibility, state timing, callback dispatch, performance/resource usage, security boundaries, build/deploy behavior, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic architecture risk rules. The final deliverable must be a Chinese Markdown detection report.
 ---
 
@@ -27,7 +27,7 @@ The final deliverable is always a Markdown file on disk:
 .impact-scan/risk_report.md
 ```
 
-Do not treat a terminal/chat summary as completion. Even when using guided mode, the agent must run the report step or one-shot scanner before the final reply. The final reply should mention the generated file path and a short summary only after `.impact-scan/risk_report.md` exists.
+Do not treat a terminal/chat summary as final completion. In interactive guided mode, checkpoint replies are allowed between steps, but the final completion reply is allowed only after the agent runs the report step and verifies `.impact-scan/risk_report.md` exists. The final completion reply should mention the generated file path and a short summary.
 
 ## Interaction Contract
 
@@ -50,7 +50,7 @@ Checkpoint rule:
 - Step 2 runs `triage`, summarizes risk counts and expansion candidates, then waits for confirmation.
 - Step 3 runs `expand`, summarizes reference evidence and CodeGraph/rg status, then waits for confirmation.
 - Step 4 summarizes key evidence and waits for confirmation before final report.
-- Step 5 runs `report`, verifies `.impact-scan/risk_report.md`, then replies with the path and short summary.
+- Step 5 runs `report`, verifies `.impact-scan/risk_report.md`, then sends the final completion reply with the path and short summary.
 
 Do not run Step 1 through Step 5 in one uninterrupted sequence in guided mode.
 
@@ -74,7 +74,7 @@ Step 5: Final report → 生成最终报告
 Best for CI or when the user says "直接生成报告":
 
 ```bash
-python3 c-regression-impact-scan/scripts/c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys/net
+python3 ripple/scripts/c_impact_scan.py --range HEAD~1..HEAD --subsystem subsys/net
 ```
 
 This runs all steps at once and outputs `.impact-scan/risk_report.md`.
@@ -135,7 +135,7 @@ The scanner will read focus from `.impact-scan-focus.yml` automatically. CLI fla
 Run the scanner to discover what changed:
 
 ```bash
-python3 c-regression-impact-scan/scripts/c_impact_scan.py \
+python3 ripple/scripts/c_impact_scan.py \
   --step discover --range HEAD~1..HEAD --subsystem subsys/net
 ```
 
@@ -159,7 +159,7 @@ Present the summary to the user for confirmation:
 Run quick triage WITHOUT reference search. This only scores changed files/symbols using deterministic rules:
 
 ```bash
-python3 c-regression-impact-scan/scripts/c_impact_scan.py \
+python3 ripple/scripts/c_impact_scan.py \
   --step triage --range HEAD~1..HEAD --subsystem subsys/net
 ```
 
@@ -183,7 +183,7 @@ Only expand references for:
 Do NOT expand all changed symbols. This keeps reference search focused and fast:
 
 ```bash
-python3 c-regression-impact-scan/scripts/c_impact_scan.py \
+python3 ripple/scripts/c_impact_scan.py \
   --step expand --range HEAD~1..HEAD --subsystem subsys/net
 ```
 
@@ -220,7 +220,7 @@ Stop here and wait for the user's confirmation unless the user explicitly select
 Generate the Chinese Markdown report from all collected artifacts:
 
 ```bash
-python3 c-regression-impact-scan/scripts/c_impact_scan.py \
+python3 ripple/scripts/c_impact_scan.py \
   --step report --range HEAD~1..HEAD --subsystem subsys/net
 ```
 
@@ -437,7 +437,7 @@ Completion rule:
 
 - Completed: `.impact-scan/risk_report.md` exists and the final reply includes its path.
 - Not completed: only terminal/chat text was produced, or only JSON artifacts were produced.
-- Recovery: run `python c-regression-impact-scan/scripts/c_impact_scan.py --step report --range HEAD~1..HEAD` from the target repo. If report artifacts are missing, run one-shot mode without `--step`.
+- Recovery: run `python ripple/scripts/c_impact_scan.py --step report --range HEAD~1..HEAD` from the target repo. If report artifacts are missing, run one-shot mode without `--step`.
 
 If CodeGraph is missing, tell the user and either stop (`--codegraph-mode required`) or continue with lower confidence (`--codegraph-mode prefer`).
 
