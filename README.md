@@ -177,7 +177,7 @@ python .claude\skills\ripple\scripts\ripple_scan.py --step report --range HEAD~1
 - `expansion_summary.json`：实际展开的 symbol、CodeGraph/rg 命中情况。
 - `risk_report.md`：最终中文 Markdown 检测报告。
 
-`expand` 步不会默认展开所有 changed symbols，而是优先展开用户指定 symbol、高风险 symbol、public interface symbol 和 memory-lifetime symbol。这样更适合百万级仓库和慢速内网模型。
+`expand` 步不会默认展开所有 changed symbols，而是优先展开用户指定 symbol、高风险 symbol、public interface symbol、memory-lifetime symbol 和 pointer-alias-lifetime symbol。这样更适合百万级仓库和慢速内网模型。
 
 如果 Claude Code 在 `triage` 或 `expand` 后只在终端里回复了分析结论，没有生成 `.impact-scan/risk_report.md`，说明 agent 没有继续执行 `--step report`。可直接补跑：
 
@@ -202,6 +202,7 @@ focus_symbols:
   - session_alloc
 focus_risks:
   - memory_leak
+  - pointer_alias_lifetime
   - callback_dispatch
 ignore_paths:
   - tests/
@@ -336,6 +337,7 @@ subsys/net/include/
 - `Impact Paths`
 - `Must Review Manually`
 - `Memory Leak Focus`
+- `Pointer Alias Lifetime Focus`
 - `Suggested Regression Checks`
 - `Limitations`
 
@@ -345,7 +347,7 @@ subsys/net/include/
 
 - `CodeGraph 层`：查找 function/symbol reference、callers/callees、include/import 关系和 subsystem 影响面，提供 impact evidence。
 - `Heuristic 层`：根据变量名、函数名、路径、diff 内容、risk category 和 deterministic scoring 识别风险信号，只作为 risk triage。
-- `Manual Review 层`：对同一地址不同变量名、pointer alias、ownership transfer、callback/async flow、struct field 传递、error cleanup path 等工具难以证明的问题，输出到报告里的 `必须人工 Review`，让工程师按清单人工排查。
+- `Manual Review 层`：对同一地址不同变量名、pointer alias、ownership transfer、callback/async flow、struct field 传递、error cleanup path 等工具难以证明的问题，输出到报告里的 `必须人工 Review`，让工程师按清单人工排查。对于 C 指针风险，不依赖局部变量名做判断，而是按对象类型、struct 字段、ownership API 和逃逸点追踪。
 
 其中 `Affected Subsystem Candidates` 不只列出命中数量，还会按 subsystem 展开：
 
@@ -440,6 +442,22 @@ subsys/net/include/
 风险原因：
 
 长期运行的老功能、循环调用路径和异常路径更容易暴露泄漏、引用计数不平衡或释放顺序问题。对象插入容器后通常发生 ownership 转移，如果异常路径没有从容器摘除、重复插入未处理、销毁路径没有遍历释放，也会造成泄漏。
+
+### 指针别名与生命周期
+
+风险类别：`pointer_alias_lifetime`
+
+检查内容：
+
+- `void *opaque` / `void *ctx` / `void *user_data` / `void *priv` / `void *cookie` 被 cast 回变更对象类型
+- struct 字段赋值（`->field = ...`）、全局变量赋值、容器插入操作
+- callback 注册、thread / timer / async task / workqueue 中传递的对象指针
+- 新增或修改指针字段、refcount 字段、lock/list-node 字段时，destroy/copy/clone/error-cleanup 路径是否同步更新
+- `memcpy` / `memset` / `sizeof` / `offsetof` / `container_of` 作用于含指针/refcount/lock/list node 的结构体
+
+风险原因：
+
+C 语言中同一个对象可能以不同变量名出现（如 `s` → `ctx` → `opaque` → `user_data`），经过 struct 字段赋值、容器插入、callback 注册、线程/定时器传递后逃逸出当前函数作用域。仅靠局部变量名 grep 无法正确追踪对象生命周期。必须在报告里按对象类型、字段访问、ownership API 和逃逸点追踪，而非按变量名判断安全性。
 
 ### 并发和锁
 
@@ -618,6 +636,7 @@ abi_layout              +5
 security_boundary       +5
 concurrency             +4
 ownership_lifetime      +4
+pointer_alias_lifetime  +5
 protocol_compatibility  +4
 state_machine_timing    +4
 callback_dispatch       +4
