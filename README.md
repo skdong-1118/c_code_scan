@@ -426,7 +426,7 @@ subsys/net/include/
 
 ### 内存泄漏和生命周期
 
-风险类别：`memory_leak`、`ownership_lifetime`
+风险类别：`memory_leak`
 
 检查内容：
 

@@ -140,7 +140,7 @@ class CImpactScanTests(unittest.TestCase):
         score, reasons = scan.score_symbol(symbol, None, scan.default_scan_config())
 
         self.assertIn("memory_leak", categories)
-        self.assertIn("ownership_lifetime", categories)
+        self.assertNotIn("ownership" + "_lifetime", categories)
         self.assertGreaterEqual(score, 8)
         self.assertTrue(any("container" in reason.lower() or "memory" in reason.lower() for reason in reasons))
 
@@ -226,7 +226,6 @@ class CImpactScanTests(unittest.TestCase):
             "memory_leak": "ctx = malloc(sizeof(*ctx)); return -1;",
             "abi_layout": "struct api_msg { int version; long size; };",
             "error_handling": "if (!ctx) return ERR_INVALID;",
-            "ownership_lifetime": "refcount_dec(&obj->refcnt); release(obj);",
             "callback_dispatch": "ops->open = handler; register_callback(cb);",
         }
 
@@ -285,6 +284,20 @@ class CImpactScanTests(unittest.TestCase):
             refs = scan.gather_references(Path("."), symbols, 50, codegraph, scan.default_scan_config())
 
         self.assertEqual("none", refs[0]["backend"])
+
+    def test_required_codegraph_mode_fails_when_index_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo(tmp)
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                with mock.patch.object(scan, "find_codegraph", return_value="/usr/bin/codegraph"):
+                    ret = scan.main(["--step", "discover", "--codegraph-mode", "required"])
+
+                self.assertEqual(3, ret)
+            finally:
+                os.chdir(str(old_cwd))
 
     def test_default_cli_requires_codegraph(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -558,6 +571,20 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("display_name: Ripple", agent_text)
         self.assertIn("interactive guided", agent_text)
         self.assertIn("wait for confirmation", agent_text)
+
+    def test_removed_risk_categories_do_not_remain_in_skill_or_script(self):
+        skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        script_text = SCRIPT.read_text(encoding="utf-8")
+        combined = skill_text + "\n" + script_text
+        removed_terms = [
+            "ownership" + "_lifetime",
+            "macro or " + "conditional",
+            "conditional " + "compilation",
+            "build/" + "feature",
+        ]
+
+        for term in removed_terms:
+            self.assertNotIn(term, combined)
 
     def test_pointer_alias_lifetime_scores_high_and_requires_review(self):
         symbol = scan.changed_symbol(

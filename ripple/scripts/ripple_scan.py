@@ -30,7 +30,6 @@ DECL_RE = re.compile(
     r"^\s*(?:extern\s+)?(?:[A-Za-z_][\w\s\*\(\),]*\s+)+(?P<name>[A-Za-z_]\w*)\s*\([^{}]*\)\s*;"
 )
 TYPE_RE = re.compile(r"\b(struct|union|enum|typedef)\b")
-MACRO_RE = re.compile(r"^\s*#\s*(define|if|ifdef|ifndef|elif|undef)\b")
 CALLBACK_RE = re.compile(r"\b(callback|cb|ops|vtable|handler|hook)\b|(?:\*\s*[A-Za-z_]\w*\s*\()", re.I)
 GLOBAL_RE = re.compile(r"^\s*(?:extern\s+)?[A-Za-z_][\w\s\*]*\s+[A-Za-z_]\w*(?:\s*=|\s*;)")
 MEMORY_RE = re.compile(
@@ -57,7 +56,6 @@ ARCH_RISK_PATTERNS = [
     ("memory_leak", re.compile(r"\b(malloc|calloc|realloc|strdup|free|release|destroy|cleanup|refcount|refcnt|retain|alloc|dealloc|list_(add|add_tail|del|del_init)|hlist_(add|del)|rb_(insert|erase|link)|tree_(insert|remove|erase|delete)|hash_(add|del|remove|insert)|queue_(push|pop|remove)|enqueue|dequeue|cache_(add|insert|remove|delete)|map_(put|insert|remove|erase))\b", re.I)),
     ("abi_layout", re.compile(r"\b(struct|union|enum|typedef|sizeof|pragma\s+pack|packed|__attribute__|dllexport|visibility|export)\b", re.I)),
     ("error_handling", re.compile(r"\b(return|errno|error|err_|goto|fail|cleanup|NULL|nullptr|invalid|denied)\b", re.I)),
-    ("ownership_lifetime", re.compile(r"\b(owner|ownership|refcount|refcnt|retain|release|destroy|init|deinit|close|open|cleanup|lifetime|list_(add|add_tail|del|del_init)|hlist_(add|del)|rb_(insert|erase|link)|tree_(insert|remove|erase|delete)|hash_(add|del|remove|insert)|queue_(push|pop|remove)|enqueue|dequeue|cache_(add|insert|remove|delete)|map_(put|insert|remove|erase))\b", re.I)),
     ("pointer_alias_lifetime", re.compile(r"\b(void\s*\*|opaque|ctx|context|user_data|userdata|priv|private|cookie|container_of|offsetof|list_(add|add_tail)|hlist_add|hash_(add|insert)|map_(put|insert)|queue_push|enqueue|cache_(add|insert)|callback_register|register_cb)\b|->\s*[A-Za-z_]\w*\s*=", re.I)),
     ("callback_dispatch", re.compile(r"\b(callback|cb|ops|vtable|handler|dispatch|command|cmd_table|register|unregister|hook)\b|(?:\*\s*[A-Za-z_]\w*\s*\()", re.I)),
 ]
@@ -66,7 +64,6 @@ ARCH_CATEGORY_WEIGHTS = {
     "memory_leak": 5,
     "abi_layout": 5,
     "error_handling": 3,
-    "ownership_lifetime": 4,
     "pointer_alias_lifetime": 5,
     "callback_dispatch": 4,
 }
@@ -92,13 +89,11 @@ def detect_risk_categories(evidence, file_path, kind):
     if kind == "callback-or-function-pointer" and "callback_dispatch" not in categories:
         categories.append("callback_dispatch")
     if kind == "memory-lifetime":
-        for name in ("memory_leak", "ownership_lifetime"):
-            if name not in categories:
-                categories.append(name)
+        if "memory_leak" not in categories:
+            categories.append("memory_leak")
     if kind == "pointer-alias-lifetime":
-        for name in ("pointer_alias_lifetime", "ownership_lifetime"):
-            if name not in categories:
-                categories.append(name)
+        if "pointer_alias_lifetime" not in categories:
+            categories.append("pointer_alias_lifetime")
     return categories
 
 
@@ -781,9 +776,6 @@ def score_file(item):
     if item.get("is_memory_sensitive_path"):
         score += 2
         reasons.append("memory-sensitive path changed")
-    if item["is_build_file"]:
-        score += 3
-        reasons.append("build or feature switch file changed")
     if item["added"] + item["deleted"] >= 80:
         score += 2
         reasons.append("large change size")
@@ -941,7 +933,7 @@ def checks_for_categories(categories, legacy_hit):
         checks.append("运行该 subsystem 的 legacy tests，重点验证老功能路径和兼容行为。")
     if "abi_layout" in categories:
         checks.append("Review ABI/layout compatibility，检查 public structs、enums、typedefs 和 exported headers。")
-    if "memory_safety" in categories or "memory_leak" in categories or "ownership_lifetime" in categories:
+    if "memory_safety" in categories or "memory_leak" in categories:
         checks.append("执行 memory-lifetime 检查，覆盖 allocation/free、refcount、cleanup 和 error paths。")
     if "pointer_alias_lifetime" in categories:
         checks.append("执行 pointer alias/lifetime 检查：按对象类型、字段访问、ownership API 和逃逸点追踪，不依赖变量名。")
@@ -1055,7 +1047,6 @@ def manual_review_items(risks):
     keywords = (
         "header file changed",
         "struct/union/enum/typedef changed",
-        "macro or conditional compilation changed",
         "callback/function pointer pattern changed",
         "memory allocation/lifetime related change",
         "pointer alias/field ownership lifetime change",
@@ -1231,14 +1222,14 @@ def markdown_report(
             "## 建议回归检查",
             "- Review 上方列出的 high-risk public headers 和 shared modules。",
             "- 针对受影响 subsystem 候选运行 legacy tests。",
-            "- 人工检查 struct layout、enum values、macros、callbacks 和 function pointer tables。",
+            "- 人工检查 struct layout、enum values、callbacks 和 function pointer tables。",
             "- 对 memory-lifetime 变更执行内存泄漏专项检查，尤其关注分配/释放和错误路径。",
             "- 对 pointer alias/lifetime 变更按对象类型、字段访问、ownership API、callback opaque 和异步逃逸点做人工 review。",
             "- 对引用范围较广的 symbol，每个受影响 subsystem 至少验证一条 legacy feature path。",
             "",
             "## 局限性",
             "- 这是 regression risk triage scan，不是 compatibility proof。",
-            "- 如果没有 compile database 或 semantic C index，macro expansion 和 conditional compilation paths 可能不完整。",
+            "- 如果没有 compile database 或 semantic C index，function pointer 和 callback paths 可能不完整。",
             "- 除非 CodeGraph 本地索引捕获了 function pointer 和 callback 关系，否则相关判断属于 heuristic analysis。",
         ]
     )
@@ -1599,9 +1590,12 @@ def main(argv=None):
     apply_focus_to_scan_config(config, subsystem, focus)
 
     codegraph = prepare_codegraph(repo, args.codegraph_mode, args.init_codegraph)
-    if args.codegraph_mode == "required" and not codegraph["available"]:
+    if args.codegraph_mode == "required" and (not codegraph["available"] or codegraph["errors"]):
         write_json(out / "codegraph_status.json", codegraph)
-        print("error: CodeGraph is required but codegraph executable was not found", file=sys.stderr)
+        if not codegraph["available"]:
+            print("error: CodeGraph is required but codegraph executable was not found", file=sys.stderr)
+        else:
+            print("error: CodeGraph is required but not ready: {}".format("; ".join(codegraph["errors"])), file=sys.stderr)
         return 3
 
     if args.step == "discover":

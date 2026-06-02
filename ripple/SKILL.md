@@ -323,14 +323,12 @@ low_risk_paths:
 - configured high-risk path: +3
 - configured legacy path: +3
 - configured memory-sensitive path: +2
-- build/feature file changed: +3
 - large change (>= 80 lines): +2
 
 ### Symbol-level weights
 
 - function declaration/definition changed: +4
 - struct/union/enum/typedef changed: +4
-- macro or conditional compilation changed: +3
 - callback/function pointer pattern changed: +4
 - global data changed: +2
 - memory allocation/lifetime change: +5
@@ -358,8 +356,6 @@ error_handling
 callback_dispatch
 ```
 
-The scanner may still detect other architecture category keywords internally, but these categories do not participate in default scoring or report risk summaries unless explicitly overridden.
-
 | Category | Weight |
 |----------|--------|
 | `memory_safety` | +5 |
@@ -381,7 +377,7 @@ Scoring is triage only — not proof of defect. High score means "review this," 
 
 ### CodeGraph 层
 
-Query function/symbol references, callers/callees, include/import relationships, and subsystem spread. Provides impact evidence. Does NOT prove safety — macro expansion, conditional compilation, function pointers, and callbacks can hide impact.
+Query function/symbol references, callers/callees, include/import relationships, and subsystem spread. Provides impact evidence. Does NOT prove safety — function pointers and callbacks can hide impact.
 
 ### Heuristic 层
 
@@ -399,7 +395,6 @@ For risks that static tools cannot resolve — pointer aliasing, ownership trans
 | `memory_leak` | alloc/free imbalance, missing cleanup, refcount imbalance, container ops |
 | `abi_layout` | struct/union/enum/typedef layout, packing, alignment, exported symbols |
 | `error_handling` | return value, error code, goto error, NULL check, cleanup path |
-| `ownership_lifetime` | ownership transfer, init/destroy order, retain/release, container insert/remove |
 | `pointer_alias_lifetime` | same object under different pointer names, void* opaque/user_data/ctx, field/global/container escape, callback registration lifetime |
 | `callback_dispatch` | function pointer table, ops table, handler registration, dispatch |
 
