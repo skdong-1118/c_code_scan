@@ -293,6 +293,26 @@ include/
 subsys/net/include/
 ```
 
+如果只传入叶子目录名，例如：
+
+```text
+--subsystem nbm
+```
+
+而当前分支最后一个 commit 的真实变更路径是：
+
+```text
+fosip/nbm/api.c
+```
+
+`discover` 会先读取 `HEAD~1..HEAD` 的 changed files，并自动解析为：
+
+```text
+--subsystem fosip/nbm
+```
+
+如果同一个叶子目录在本次变更里命中多个候选路径，例如 `fosip/nbm` 和 `product/nbm`，脚本不会猜测；候选会写入 `scope_discovery.json` 的 `subsystem_resolution_candidates`，等待用户确认完整路径。
+
 脚本也支持在子系统目录下使用 `.impact-scan.json`。
 
 ## 输出文件

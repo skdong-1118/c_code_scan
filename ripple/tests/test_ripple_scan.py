@@ -463,6 +463,38 @@ class CImpactScanTests(unittest.TestCase):
         scan.run(["git", "commit", "-m", "second"], repo)
         return repo
 
+    def _make_git_repo_with_leaf_subsystem_change(self, tmp):
+        repo = Path(tmp)
+        scan.run(["git", "init"], repo)
+        scan.run(["git", "config", "user.email", "test@test"], repo)
+        scan.run(["git", "config", "user.name", "test"], repo)
+        source_dir = repo / "fosip" / "nbm"
+        source_dir.mkdir(parents=True)
+        (source_dir / "api.c").write_text("int nbm_api(void) { return 0; }\n", encoding="utf-8")
+        scan.run(["git", "add", "."], repo)
+        scan.run(["git", "commit", "-m", "initial"], repo)
+        (source_dir / "api.c").write_text("int nbm_api(void) { return 1; }\n", encoding="utf-8")
+        scan.run(["git", "add", "."], repo)
+        scan.run(["git", "commit", "-m", "update nbm"], repo)
+        return repo
+
+    def _make_git_repo_with_ambiguous_leaf_subsystem_change(self, tmp):
+        repo = Path(tmp)
+        scan.run(["git", "init"], repo)
+        scan.run(["git", "config", "user.email", "test@test"], repo)
+        scan.run(["git", "config", "user.name", "test"], repo)
+        for root in ("fosip", "product"):
+            source_dir = repo / root / "nbm"
+            source_dir.mkdir(parents=True)
+            (source_dir / "api.c").write_text("int api(void) { return 0; }\n", encoding="utf-8")
+        scan.run(["git", "add", "."], repo)
+        scan.run(["git", "commit", "-m", "initial"], repo)
+        for root in ("fosip", "product"):
+            (repo / root / "nbm" / "api.c").write_text("int api(void) { return 1; }\n", encoding="utf-8")
+        scan.run(["git", "add", "."], repo)
+        scan.run(["git", "commit", "-m", "ambiguous nbm"], repo)
+        return repo
+
     def test_step_discover_outputs_scope(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_git_repo(tmp)
@@ -479,6 +511,50 @@ class CImpactScanTests(unittest.TestCase):
                 self.assertTrue((out / "scope_discovery.json").exists())
                 discovery = json.loads((out / "scope_discovery.json").read_text(encoding="utf-8"))
                 self.assertIn("changed_files", discovery)
+            finally:
+                os.chdir(str(old_cwd))
+
+    def test_discover_resolves_leaf_subsystem_from_latest_changed_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo_with_leaf_subsystem_change(tmp)
+            out = repo / ".impact-scan"
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                                 "--step", "discover", "--subsystem", "nbm",
+                                 "--codegraph-mode", "off"])
+
+                self.assertEqual(0, ret)
+                discovery = json.loads((out / "scope_discovery.json").read_text(encoding="utf-8"))
+                config = json.loads((out / "scan_config.json").read_text(encoding="utf-8"))
+                self.assertEqual(["fosip/nbm/api.c"], discovery["changed_files"])
+                self.assertEqual("nbm", discovery["requested_subsystem"])
+                self.assertEqual("fosip/nbm", discovery["resolved_subsystem"])
+                self.assertTrue(discovery["subsystem_auto_resolved"])
+                self.assertEqual("fosip/nbm", config["scope_path"])
+            finally:
+                os.chdir(str(old_cwd))
+
+    def test_discover_reports_ambiguous_leaf_subsystem_without_guessing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo_with_ambiguous_leaf_subsystem_change(tmp)
+            out = repo / ".impact-scan"
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                                 "--step", "discover", "--subsystem", "nbm",
+                                 "--codegraph-mode", "off"])
+
+                self.assertEqual(0, ret)
+                discovery = json.loads((out / "scope_discovery.json").read_text(encoding="utf-8"))
+                self.assertEqual([], discovery["changed_files"])
+                self.assertEqual("nbm", discovery["resolved_subsystem"])
+                self.assertFalse(discovery["subsystem_auto_resolved"])
+                self.assertEqual(["fosip/nbm", "product/nbm"], discovery["subsystem_resolution_candidates"])
             finally:
                 os.chdir(str(old_cwd))
 

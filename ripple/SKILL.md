@@ -162,6 +162,7 @@ This outputs `.impact-scan/scope_discovery.json`:
 - inferred subsystems
 
 The `discover` step starts a new analysis and clears previous `.impact-scan/` artifacts before writing fresh files.
+If the user passes a leaf subsystem name such as `nbm`, the scanner first inspects latest-commit changed files and auto-resolves a unique full path such as `fosip/nbm`. If multiple candidates exist, it records them in `subsystem_resolution_candidates` and does not guess.
 
 Present the summary to the user for confirmation:
 

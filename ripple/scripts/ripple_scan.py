@@ -583,6 +583,45 @@ def pathspec_args_for_scope(config):
     return ["--", scope_path] if scope_path else []
 
 
+def resolve_subsystem_from_changed_files(repo, commit_range, requested_subsystem):
+    requested = normalize(requested_subsystem or "").strip().strip("/")
+    result = {
+        "requested_subsystem": requested,
+        "resolved_subsystem": requested,
+        "subsystem_auto_resolved": False,
+        "subsystem_resolution_candidates": [],
+    }
+    if not requested:
+        return result
+    if (repo / requested).exists():
+        return result
+
+    raw_files = parse_changed_files(repo, commit_range, None)
+    candidates = []
+    seen = set()
+    requested_parts = [part for part in requested.split("/") if part]
+    requested_leaf = requested_parts[-1] if requested_parts else requested
+    for item in raw_files:
+        parts = [part for part in item["path"].split("/") if part]
+        for index, part in enumerate(parts[:-1]):
+            if part != requested_leaf:
+                continue
+            candidate = "/".join(parts[: index + 1])
+            if requested_parts and len(requested_parts) > 1:
+                tail = parts[index - len(requested_parts) + 1 : index + 1]
+                if tail != requested_parts:
+                    continue
+            if candidate not in seen:
+                candidates.append(candidate)
+                seen.add(candidate)
+
+    result["subsystem_resolution_candidates"] = candidates
+    if len(candidates) == 1:
+        result["resolved_subsystem"] = candidates[0]
+        result["subsystem_auto_resolved"] = candidates[0] != requested
+    return result
+
+
 def parse_changed_files(repo, commit_range, config=None):
     output = git(["diff", "--numstat", "--name-status", commit_range] + pathspec_args_for_scope(config), repo)
     files = {}
@@ -1282,6 +1321,10 @@ def _step_discover(repo, out, config, codegraph, args, focus):
     write_json(out / "diff_summary.json", files)
     write_json(out / "scope_discovery.json", {
         "range": args.range,
+        "requested_subsystem": config.get("requested_subsystem", config.get("scope_path", "")),
+        "resolved_subsystem": config.get("scope_path", ""),
+        "subsystem_auto_resolved": bool(config.get("subsystem_auto_resolved", False)),
+        "subsystem_resolution_candidates": config.get("subsystem_resolution_candidates", []),
         "changed_file_count": len(files),
         "changed_files": [item["path"] for item in files],
         "inferred_subsystems": subsystems_inferred,
@@ -1607,7 +1650,10 @@ def main(argv=None):
 
     # Scope override from focus config
     subsystem = args.subsystem or focus.get("scope_override") or ""
+    subsystem_resolution = resolve_subsystem_from_changed_files(repo, args.range, subsystem)
+    subsystem = subsystem_resolution["resolved_subsystem"]
     config = load_scan_config(repo, subsystem)
+    config.update(subsystem_resolution)
     apply_focus_to_scan_config(config, subsystem, focus)
 
     codegraph = prepare_codegraph(repo, args.codegraph_mode, args.init_codegraph)
