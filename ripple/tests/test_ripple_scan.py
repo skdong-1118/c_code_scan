@@ -537,6 +537,28 @@ class CImpactScanTests(unittest.TestCase):
             finally:
                 os.chdir(str(old_cwd))
 
+    def test_discover_infers_full_subsystem_from_latest_changed_files_without_subsystem_arg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo_with_leaf_subsystem_change(tmp)
+            out = repo / ".impact-scan"
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                                 "--step", "discover", "--codegraph-mode", "off"])
+
+                self.assertEqual(0, ret)
+                discovery = json.loads((out / "scope_discovery.json").read_text(encoding="utf-8"))
+                config = json.loads((out / "scan_config.json").read_text(encoding="utf-8"))
+                self.assertEqual(["fosip/nbm/api.c"], discovery["changed_files"])
+                self.assertEqual("", discovery["requested_subsystem"])
+                self.assertEqual("fosip/nbm", discovery["resolved_subsystem"])
+                self.assertTrue(discovery["subsystem_auto_resolved"])
+                self.assertEqual("fosip/nbm", config["scope_path"])
+            finally:
+                os.chdir(str(old_cwd))
+
     def test_discover_reports_ambiguous_leaf_subsystem_without_guessing(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_git_repo_with_ambiguous_leaf_subsystem_change(tmp)

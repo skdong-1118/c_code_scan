@@ -150,7 +150,7 @@ codegraph init -i
 默认交互规则：
 
 - 用户只说“分析最近一次修改对已有功能的影响”时，默认走交互式分步流程。
-- Step 0 不再要求用户选择 subsystem、symbol、风险项或忽略路径；默认从当前分支最后一个 commit 自动推断，并使用内置风险项。
+- Step 0 不再要求用户选择 subsystem、symbol、风险项或忽略路径；默认先读取当前分支最后一个 commit 的 git 修改路径，再实时推断完整 subsystem 路径，并使用内置风险项。
 - 每次新分析开始前会主动清空输出目录里的旧分析结果；`discover` 和 one-shot 会重建 `.impact-scan/`，后续 `triage` / `expand` / `report` 不会清空前一步产物。
 - Step 1 `discover` 完成后，Claude Code 应该展示变更范围摘要，并等待你确认扫描范围。
 - Step 2 `triage` 完成后，Claude Code 应该展示风险数量和 expansion candidates，并等待你确认是否继续。
@@ -293,6 +293,18 @@ include/
 subsys/net/include/
 ```
 
+如果不传 `--subsystem`，`discover` 会先读取 `HEAD~1..HEAD` 的 changed files；若本次变更只落在一个完整 subsystem 前缀下，例如：
+
+```text
+fosip/nbm/api.c
+```
+
+脚本会直接推断扫描范围为：
+
+```text
+fosip/nbm
+```
+
 如果只传入叶子目录名，例如：
 
 ```text
@@ -305,7 +317,7 @@ subsys/net/include/
 fosip/nbm/api.c
 ```
 
-`discover` 会先读取 `HEAD~1..HEAD` 的 changed files，并自动解析为：
+`discover` 同样会先读取 `HEAD~1..HEAD` 的 changed files，并自动解析为：
 
 ```text
 --subsystem fosip/nbm

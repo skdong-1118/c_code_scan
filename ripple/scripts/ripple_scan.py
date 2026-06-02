@@ -591,12 +591,23 @@ def resolve_subsystem_from_changed_files(repo, commit_range, requested_subsystem
         "subsystem_auto_resolved": False,
         "subsystem_resolution_candidates": [],
     }
+    raw_files = parse_changed_files(repo, commit_range, None)
     if not requested:
+        inferred = []
+        seen = set()
+        for item in raw_files:
+            candidate = subsystem_for(item["path"])
+            if candidate and candidate != "." and candidate not in seen:
+                inferred.append(candidate)
+                seen.add(candidate)
+        result["subsystem_resolution_candidates"] = inferred
+        if len(inferred) == 1:
+            result["resolved_subsystem"] = inferred[0]
+            result["subsystem_auto_resolved"] = True
         return result
     if (repo / requested).exists():
         return result
 
-    raw_files = parse_changed_files(repo, commit_range, None)
     candidates = []
     seen = set()
     requested_parts = [part for part in requested.split("/") if part]
