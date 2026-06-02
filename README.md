@@ -354,7 +354,6 @@ fosip/nbm/api.c
 .impact-scan/subsystem_analysis.json
 .impact-scan/risk_items.json
 .impact-scan/architecture_risk_summary.json
-.impact-scan/manual_review.json
 ```
 
 最终交付物是 Markdown 报告：
@@ -380,7 +379,7 @@ fosip/nbm/api.c
 - `Affected Subsystem Candidates`
 - `Reference Evidence`
 - `Impact Paths`
-- `Must Review Manually`
+- `Lifecycle Risk Evidence`
 - `Memory Leak Focus`
 - `Pointer Alias Lifetime Focus`
 - `Suggested Regression Checks`
@@ -392,7 +391,7 @@ fosip/nbm/api.c
 
 - `CodeGraph 层`：查找 function/symbol reference、callers/callees、include/import 关系和 subsystem 影响面，提供 impact evidence。
 - `Heuristic 层`：根据变量名、函数名、路径、diff 内容、risk category 和 deterministic scoring 识别风险信号，只作为 risk triage。
-- `Manual Review 层`：对同一地址不同变量名、pointer alias、ownership transfer、callback/async flow、struct field 传递、error cleanup path 等工具难以证明的问题，输出到报告里的 `必须人工 Review`，让工程师按清单人工排查。对于 C 指针风险，不依赖局部变量名做判断，而是按对象类型、struct 字段、ownership API 和逃逸点追踪。
+- `生命周期证据层`：对同一地址不同变量名、pointer alias、ownership transfer、callback/async flow、struct field 传递、error cleanup path 等工具难以证明的问题，输出为 `生命周期风险证据`、`指针别名与生命周期关注点` 和 `建议回归检查`。对于 C 指针风险，不依赖局部变量名做判断，而是按对象类型、struct 字段、ownership API 和逃逸点追踪。
 
 其中 `Affected Subsystem Candidates` 不只列出命中数量，还会按 subsystem 展开：
 
@@ -401,7 +400,7 @@ fosip/nbm/api.c
 - `Referenced/impact files`：列出 CodeGraph 搜索命中的引用文件，用于定位老功能调用链。
 - `Symbols`：列出把本次修改与该 subsystem 关联起来的 changed symbol。
 - `Risk categories`：列出 `memory_leak`、`abi_layout`、`pointer_alias_lifetime`、`callback_dispatch` 等架构风险类别。
-- `Suggested checks`：给出该 subsystem 推荐的 legacy tests、ABI/layout review、memory-lifetime check、protocol compatibility 验证等检查动作。
+- `Suggested checks`：给出该 subsystem 推荐的 legacy tests、ABI/layout review、memory-lifetime check 等检查动作。
 
 弱模型或内网 Claude Code 可以优先读取 `.impact-scan/subsystem_analysis.json`，再把其中内容整理进最终 Markdown 报告。
 
@@ -504,6 +503,17 @@ fosip/nbm/api.c
 
 C 语言中同一个对象可能以不同变量名出现（如 `s` → `ctx` → `opaque` → `user_data`），经过 struct 字段赋值、容器插入、callback 注册或模块级 registry 后逃逸出当前函数作用域。仅靠局部变量名 grep 无法正确追踪对象生命周期。必须在报告里按对象类型、字段访问、ownership API 和逃逸点追踪，而非按变量名判断安全性。
 
+如果变更只发生在函数体内部的局部变量、字段访问或堆对象处理上，Step 2 会先把 diff 行归属到 enclosing function，并提取对象生命周期证据；Step 3 再用 CodeGraph 查询该 enclosing function 的 callers/callees/impact，而不是查询局部变量名。
+
+堆上动态申请的数据结构需要特殊关注：
+
+- `malloc` / `calloc` / `realloc` / `strdup` 后的失败路径；
+- `free` / `destroy` / `cleanup` / `release` 是否覆盖所有 ownership 路径；
+- `list_add` / `hash_insert` / `map_put` / `queue_push` / `cache_insert` 后异常路径是否摘除或释放；
+- `obj->field = ptr`、global/static、container、callback 注册等逃逸点；
+- `void *opaque` / `user_data` / `ctx` / `priv` 在回调触发时对象是否仍然有效；
+- `refcount` / `retain` / `release` / `get` / `put` 是否平衡。
+
 ### 错误处理路径
 
 风险类别：`error_handling`
@@ -586,7 +596,7 @@ codegraph impact --symbol <symbol>
 - 没有完整 C 编译信息时，跨文件类型关系和 include 路径可能不完整。
 - 函数指针和 callback 关系依赖 CodeGraph 能力，否则只能启发式判断。
 - 简单 YAML 解析器只支持顶层 list。
-- 架构风险类别主要基于关键词和路径规则，需要人工 review 高风险项。
+- 架构风险类别主要基于关键词和路径规则，需要结合生命周期风险证据验证高风险项。
 
 ## 开发验证
 

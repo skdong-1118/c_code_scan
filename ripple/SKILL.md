@@ -191,6 +191,10 @@ This outputs `.impact-scan/triage_summary.json`:
 
 Important: Step 2 does NOT search for references across the codebase. It only identifies risk signals in the diff itself. This keeps it fast.
 
+For C function-body changes, Step 2 must map local variable, field, heap allocation, container, and callback evidence to the enclosing function. Do not use local names such as `ret`, `ctx`, `tmp`, or `flag` as CodeGraph query symbols. Preserve the local evidence in `changed_symbols.json` / `risk_items.json`, but use the enclosing function as the expansion subject.
+
+Heap/object lifetime evidence includes `malloc/calloc/realloc/strdup`, `free/destroy/cleanup/release`, `ref/unref/get/put`, container insert/remove (`list/hash/map/queue/cache/tree`), `obj->field = ptr`, global/static escape, callback registration, and `void *opaque/user_data/ctx/priv`.
+
 ### Step 3: Focused Expansion (定向扩展影响面)
 
 Only expand references for:
@@ -200,6 +204,7 @@ Only expand references for:
 - public interface symbols
 - memory-lifetime symbols
 - pointer-alias/lifetime symbols, especially `void *opaque/user_data/ctx/priv`, struct field assignments, container inserts, and callback registration escape points
+- enclosing functions for local variable, field, heap-object, container, or callback changes
 
 Do NOT expand all changed symbols. This keeps reference search focused and fast:
 
@@ -251,13 +256,13 @@ The report includes:
 
 - **概要**: overall risk, max score, confidence, CodeGraph status
 - **用户重点关注覆盖**: which focus symbols found, which risks detected
-- **分析分层**: CodeGraph / Heuristic / Manual Review
+- **分析分层**: CodeGraph / Heuristic / Lifecycle Evidence
 - **高/中风险项**: table of high and medium risk items
 - **架构风险类别**: aggregated by category
 - **受影响 subsystem 候选**: per-subsystem impact reasons, files, symbols, checks
 - **Reference Evidence**: CodeGraph reference counts
 - **Impact Paths**: symbol → file → subsystem chains
-- **必须人工 Review**: mandatory manual review items
+- **生命周期风险证据**: heap/object lifetime, pointer escape, callback opaque, and cleanup evidence
 - **内存泄漏关注点**: memory-lifetime specific findings
 - **指针别名与生命周期关注点**: type/field/ownership/escape-point checks that do not rely on variable names
 - **建议回归检查**: suggested regression tests
@@ -381,15 +386,15 @@ Scoring is triage only — not proof of defect. High score means "review this," 
 
 ### CodeGraph 层
 
-Query function/symbol references, callers/callees, include/import relationships, and subsystem spread. Provides impact evidence. Does NOT prove safety — function pointers and callbacks can hide impact.
+Query function/symbol references, callers/callees, include/import relationships, and subsystem spread. Provides impact evidence. Local variable or field changes are first mapped to the enclosing function; Step 3 then uses CodeGraph on that function, not on local variable names.
 
 ### Heuristic 层
 
-Deterministic rules identify risk signals from names, paths, diff content, and categories. This is risk triage only. It can say "review this" but NOT "this is safe."
+Deterministic rules identify risk signals from functions, paths, diff content, categories, object types, fields, ownership APIs, and escape points. This is risk triage only. It can say "verify this path" but NOT "this is safe."
 
-### Manual Review 层
+### Lifecycle Evidence 层
 
-For risks that static tools cannot resolve — pointer aliasing, ownership transfer, callback flow, struct field passing, error cleanup paths — write items into `必须人工 Review`. This reduces manual review scope, not replaces architect judgment. For C pointer risks, do not rely on local variable names; track the object type, struct fields, ownership APIs, and escape points instead.
+For pointer aliasing, heap allocation, ownership transfer, callback flow, struct field passing, containers, and error cleanup paths, write evidence into `生命周期风险证据`, `指针别名与生命周期关注点`, and `建议回归检查`. For C pointer risks, do not rely on local variable names; track object type, struct fields, ownership APIs, and escape points instead.
 
 ## Architecture Risk Categories
 
@@ -453,7 +458,7 @@ Chinese Markdown, technical terms in English when clearer. Sections:
 - 受影响 subsystem 候选
 - Reference Evidence
 - Impact Paths
-- 必须人工 Review
+- 生命周期风险证据
 - 内存泄漏关注点
 - 指针别名与生命周期关注点
 - 建议回归检查

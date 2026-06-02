@@ -51,6 +51,7 @@ POINTER_ALIAS_RE = re.compile(
 )
 FIELD_ACCESS_RE = re.compile(r"(->|\.)\s*[A-Za-z_]\w*\b|\boffsetof\s*\(|\bcontainer_of\s*\(|\bsizeof\s*\(", re.I)
 SEMANTIC_RE = re.compile(r"\b(return|NULL|nullptr|errno|error|goto|len|length|size|owner)\b", re.I)
+CONTROL_KEYWORDS = set(["if", "for", "while", "switch", "return", "sizeof", "case", "else", "do"])
 ARCH_RISK_PATTERNS = [
     ("memory_safety", re.compile(r"\b(memcpy|memmove|memset|strcpy|strncpy|strcat|sprintf|snprintf|overflow|underflow|bounds?|index|len|length|size)\b", re.I)),
     ("memory_leak", re.compile(r"\b(malloc|calloc|realloc|strdup|free|release|destroy|cleanup|refcount|refcnt|retain|alloc|dealloc|list_(add|add_tail|del|del_init)|hlist_(add|del)|rb_(insert|erase|link)|tree_(insert|remove|erase|delete)|hash_(add|del|remove|insert)|queue_(push|pop|remove)|enqueue|dequeue|cache_(add|insert|remove|delete)|map_(put|insert|remove|erase))\b", re.I)),
@@ -443,6 +444,14 @@ def select_symbols_for_expansion(symbols, risks, focus):
             selected.add(name)
             reasons[name] = "memory-lifetime symbol"
             continue
+        if sym.get("kind") == "local-function-context":
+            selected.add(name)
+            reasons[name] = "local change in enclosing function"
+            continue
+        if sym.get("evidence_role"):
+            selected.add(name)
+            reasons[name] = sym["evidence_role"]
+            continue
 
     for risk in risks:
         name = risk["subject"]
@@ -663,19 +672,65 @@ def diff_lines(repo, commit_range, config=None):
     pathspec = ["--", scope_path] if scope_path else ["--", "*.c", "*.h"]
     output = git(["diff", "--unified=0", commit_range] + pathspec, repo)
     current_file = ""
+    new_line = None
     for line in output.splitlines():
         if line.startswith("+++ b/"):
             current_file = normalize(line[6:])
             continue
+        if line.startswith("@@"):
+            match = re.search(r"\+(\d+)(?:,(\d+))?", line)
+            new_line = int(match.group(1)) if match else None
+            continue
         if line.startswith("+") and not line.startswith("+++"):
-            yield current_file, line[1:]
+            yield current_file, line[1:], new_line
+            if new_line is not None:
+                new_line += 1
         elif line.startswith("-") and not line.startswith("---"):
-            yield current_file, line[1:]
+            yield current_file, line[1:], new_line
+
+
+def enclosing_function_for_line(repo, file_path, line_number):
+    if not file_path or not line_number:
+        return ""
+    path = repo / file_path
+    if not path.exists():
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except TypeError:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    current = ""
+    for raw_line in lines[:line_number]:
+        match = FUNC_DEF_RE.match(raw_line.strip())
+        if match:
+            name = match.group("name")
+            if name not in CONTROL_KEYWORDS:
+                current = name
+    return current
+
+
+def annotate_local_context(symbol, role):
+    item = dict(symbol)
+    item["evidence_role"] = role
+    return item
+
+
+def has_pointer_lifecycle_evidence(line):
+    return bool(
+        re.search(
+            r"\b(void\s*\*|opaque|ctx|context|user_data|userdata|priv|private|cookie|callback|cb|handler|hook|register|unregister)\b"
+            r"|->|\.\s*[A-Za-z_]\w*\b"
+            r"|\b(list_|hlist_|hash_|map_|queue_|enqueue|dequeue|cache_|rb_|tree_)\w*\b"
+            r"|\b(container_of|offsetof)\s*\(",
+            line,
+            re.I,
+        )
+    )
 
 
 def extract_symbols(repo, commit_range, max_symbols, config=None):
     symbols = {}
-    for file_path, line in diff_lines(repo, commit_range, config):
+    for file_path, line, line_number in diff_lines(repo, commit_range, config):
         if not file_path:
             continue
         if config and (not C_FILE_RE.search(file_path) or not path_in_scope(file_path, config)):
@@ -686,22 +741,37 @@ def extract_symbols(repo, commit_range, max_symbols, config=None):
 
         kind = ""
         name = ""
+        evidence_role = ""
+        enclosing = enclosing_function_for_line(repo, file_path, line_number)
         if MEMORY_RE.search(stripped):
             kind = "memory-lifetime"
-            ids = IDENT_RE.findall(stripped)
-            name = ids[0] if ids else "memory_change"
-        elif POINTER_ALIAS_RE.search(stripped) or FIELD_ACCESS_RE.search(stripped) and re.search(r"\b(void|struct|union|typedef|memcpy|memmove|memset)\b|->\s*[A-Za-z_]\w*\s*=", stripped, re.I):
+            name = enclosing or (IDENT_RE.findall(stripped)[0] if IDENT_RE.findall(stripped) else "memory_change")
+            if enclosing:
+                evidence_role = "heap/object lifetime evidence in enclosing function"
+        elif has_pointer_lifecycle_evidence(stripped) and (
+            POINTER_ALIAS_RE.search(stripped)
+            or FIELD_ACCESS_RE.search(stripped)
+            and re.search(r"\b(void|struct|union|typedef|memcpy|memmove|memset)\b|->\s*[A-Za-z_]\w*\s*=", stripped, re.I)
+        ):
             kind = "pointer-alias-lifetime"
-            ids = IDENT_RE.findall(stripped)
-            preferred = [token for token in ids if token.lower() not in ("void", "struct", "union", "const", "volatile", "static", "return", "sizeof", "offsetof", "container_of")]
-            name = preferred[0] if preferred else "pointer_alias_change"
-        elif TYPE_RE.search(stripped):
+            if enclosing:
+                name = enclosing
+                evidence_role = "pointer/object escape evidence in enclosing function"
+            else:
+                ids = IDENT_RE.findall(stripped)
+                preferred = [token for token in ids if token.lower() not in ("void", "struct", "union", "const", "volatile", "static", "return", "sizeof", "offsetof", "container_of")]
+                name = preferred[0] if preferred else "pointer_alias_change"
+        elif TYPE_RE.search(stripped) and not enclosing:
             kind = "type"
             ids = IDENT_RE.findall(stripped)
             for token in ids:
                 if token not in ("typedef", "struct", "union", "enum", "const", "volatile"):
                     name = token
                     break
+        elif TYPE_RE.search(stripped) and enclosing:
+            kind = "local-function-context"
+            name = enclosing
+            evidence_role = "local variable evidence in enclosing function"
         else:
             match = FUNC_DEF_RE.match(stripped) or DECL_RE.match(stripped)
             if match:
@@ -713,14 +783,38 @@ def extract_symbols(repo, commit_range, max_symbols, config=None):
                 if ids:
                     name = ids[-1]
             elif GLOBAL_RE.match(stripped):
-                kind = "global"
-                ids = IDENT_RE.findall(stripped)
-                if ids:
-                    name = ids[-1]
+                if enclosing:
+                    kind = "local-function-context"
+                    name = enclosing
+                    evidence_role = "local variable evidence in enclosing function"
+                else:
+                    kind = "global"
+                    ids = IDENT_RE.findall(stripped)
+                    if ids:
+                        name = ids[-1]
+            elif enclosing and IDENT_RE.search(stripped):
+                kind = "local-function-context"
+                name = enclosing
+                evidence_role = "local variable evidence in enclosing function"
 
         if name and kind:
             key = (name, file_path, kind)
-            symbols[key] = changed_symbol(name, file_path, kind, stripped[:240])
+            symbol = changed_symbol(name, file_path, kind, stripped[:240])
+            if evidence_role:
+                symbol = annotate_local_context(symbol, evidence_role)
+            if key in symbols:
+                existing = symbols[key]
+                if stripped[:240] not in existing.get("evidence", ""):
+                    existing["evidence"] = "{}; {}".format(existing.get("evidence", ""), stripped[:240]).strip("; ")
+                for category in symbol.get("risk_categories", []):
+                    if category not in existing["risk_categories"]:
+                        existing["risk_categories"].append(category)
+                if evidence_role and evidence_role not in existing.get("evidence_role", ""):
+                    existing["evidence_role"] = "; ".join(
+                        [value for value in [existing.get("evidence_role", ""), evidence_role] if value]
+                    )
+            else:
+                symbols[key] = symbol
             if len(symbols) >= max_symbols:
                 break
     return list(symbols.values())
@@ -847,6 +941,9 @@ def score_symbol(symbol, refs, config=None):
     elif symbol["kind"] == "global":
         score += 2
         reasons.append("global data changed")
+    elif symbol["kind"] == "local-function-context":
+        score += 4
+        reasons.append("local change in enclosing function")
     elif symbol["kind"] == "memory-lifetime":
         score += 5
         if re.search(r"\b(list_|hlist_|rb_|tree_|hash_|queue_|enqueue|dequeue|cache_|map_)", symbol.get("evidence", ""), re.I):
@@ -1105,26 +1202,6 @@ def reset_output_dir(repo, out):
     out.mkdir(parents=True, exist_ok=True)
 
 
-def manual_review_items(risks):
-    review = []
-    keywords = (
-        "header file changed",
-        "struct/union/enum/typedef changed",
-        "callback/function pointer pattern changed",
-        "memory allocation/lifetime related change",
-        "pointer alias/field ownership lifetime change",
-        "callback opaque/context pointer alias lifetime change",
-        "container pointer escape ownership change",
-        "semantic behavior keyword changed",
-        "architecture risk",
-    )
-    for item in risks:
-        reasons = "; ".join(item["reasons"])
-        if item["level"] == "high" or any(keyword in reasons for keyword in keywords):
-            review.append({"subject": item["subject"], "kind": item["kind"], "level": item["level"], "reasons": item["reasons"]})
-    return review[:30]
-
-
 def markdown_report(
     commit_range,
     codegraph,
@@ -1159,9 +1236,9 @@ def markdown_report(
         "- legacy paths: {}".format(", ".join(config["legacy_paths"][:8])),
         "",
         "## 分析分层",
-        "- CodeGraph 层：用于查找 function/symbol reference、callers/callees、include/import 关系和 subsystem 影响面；它提供影响路径 evidence，但不单独证明变更安全。",
-        "- Heuristic 层：根据变量名、函数名、路径、diff 内容、risk category 和 deterministic scoring 识别风险信号；这些结论是 risk triage，不是完整 data-flow proof。",
-        "- Manual Review 层：对内存 ownership、callback flow、struct field 传递、alias/data-flow、error cleanup path 等静态工具难以确认的项目，输出到报告的 `必须人工 Review`，要求人工排查。",
+        "- CodeGraph 层：用于查找 function/symbol reference、callers/callees、include/import 关系和 subsystem 影响面；局部变量改动会先归属到 enclosing function，再用该函数做 CodeGraph 扩展。",
+        "- Heuristic 层：根据函数、路径、diff 内容、risk category、对象类型、字段访问和逃逸点识别风险信号；这些结论是 risk triage，不是完整 data-flow proof。",
+        "- 生命周期证据层：记录 heap allocation、container insert/remove、callback opaque、struct field escape、error cleanup path 等对象生命周期证据，辅助定位泄漏、UAF、double free 和 ownership 转移风险。",
         "",
         "## 高/中风险项",
         "",
@@ -1254,16 +1331,25 @@ def markdown_report(
     else:
         lines.append("- 未发现 symbol-to-file impact path。")
 
-    review = manual_review_items(risks)
-    lines.extend(["", "## 必须人工 Review", ""])
-    if review:
-        for item in review:
-            lines.append("- `{}` ({}, {}): {}".format(item["subject"], item["kind"], item["level"], "; ".join(item["reasons"])))
-    else:
-        lines.append("- deterministic rules 未发现必须人工 Review 的项目。")
-
     memory_items = [item for item in risks if item["kind"] == "memory-lifetime"]
     pointer_alias_items = [item for item in risks if item["kind"] == "pointer-alias-lifetime" or "pointer_alias_lifetime" in item.get("risk_categories", [])]
+    local_context_items = [item for item in risks if item["kind"] == "local-function-context"]
+    lifecycle_items = [item for item in risks if item["kind"] in ("memory-lifetime", "pointer-alias-lifetime")]
+    lines.extend(["", "## 生命周期风险证据", ""])
+    if lifecycle_items or local_context_items:
+        for item in (lifecycle_items + local_context_items)[:30]:
+            lines.append("- `{}` ({}, {}): {}".format(item["subject"], item["kind"], item["level"], "; ".join(item["reasons"])))
+        lines.extend(
+            [
+                "- 对堆对象检查 allocation/free、init/destroy、ref/unref 和 error cleanup 是否成对。",
+                "- 对进入 list/hash/map/queue/cache 的对象检查插入后异常路径是否摘除或释放。",
+                "- 对 `void *opaque/user_data/ctx/priv` 和 callback 注册检查对象是否在触发期间仍然有效。",
+                "- 对 struct field/global/container 逃逸点检查 ownership 是否转移，以及销毁路径是否覆盖。",
+            ]
+        )
+    else:
+        lines.append("- deterministic rules 未发现局部函数上下文或对象生命周期证据。")
+
     lines.extend(["", "## 内存泄漏关注点", ""])
     if memory_items:
         for item in memory_items[:20]:
@@ -1287,7 +1373,7 @@ def markdown_report(
             "- 针对受影响 subsystem 候选运行 legacy tests。",
             "- 人工检查 struct layout、enum values、callbacks 和 function pointer tables。",
             "- 对 memory-lifetime 变更执行内存泄漏专项检查，尤其关注分配/释放和错误路径。",
-            "- 对 pointer alias/lifetime 变更按对象类型、字段访问、ownership API、callback opaque 和异步逃逸点做人工 review。",
+            "- 对 pointer alias/lifetime 变更按对象类型、字段访问、ownership API、callback opaque 和逃逸点做生命周期验证。",
             "- 对引用范围较广的 symbol，每个受影响 subsystem 至少验证一条 legacy feature path。",
             "",
             "## 局限性",
@@ -1307,7 +1393,7 @@ def markdown_report(
                 "- 检查 `void *opaque/user_data/ctx/priv` 是否 cast 回变更对象类型，callback 触发时对象是否仍然存活。",
                 "- 检查对象是否进入 global、struct field、list/hash/map/queue/cache 或 callback 注册表。",
                 "- 检查新增/修改指针字段是否同步更新 destroy/copy/clone/error-cleanup 路径，避免泄漏、UAF、double free 或浅拷贝。",
-                "- 对 `memcpy/memset/sizeof/offsetof/container_of` 作用于含指针/refcount/list node 的结构体进行人工 review。",
+                "- 对 `memcpy/memset/sizeof/offsetof/container_of` 作用于含指针/refcount/list node 的结构体进行生命周期验证。",
             ]
         )
     else:
@@ -1519,7 +1605,6 @@ def _step_report(repo, out, config, codegraph, args, focus):
     write_json(out / "impact_paths.json", impact_paths)
     write_json(out / "risk_items.json", risks)
     write_json(out / "architecture_risk_summary.json", arch_summary)
-    write_json(out / "manual_review.json", manual_review_items(risks))
     write_json(out / "subsystem_impact.json", subsystems)
     write_json(out / "subsystem_analysis.json", subsystem_analysis)
     write_markdown_report(out / "risk_report.md", report_text)
@@ -1707,7 +1792,6 @@ def main(argv=None):
     write_json(out / "impact_paths.json", impact_paths)
     write_json(out / "risk_items.json", risks)
     write_json(out / "architecture_risk_summary.json", arch_summary)
-    write_json(out / "manual_review.json", manual_review_items(risks))
     write_json(out / "subsystem_impact.json", subsystems)
     write_json(out / "subsystem_analysis.json", subsystem_analysis)
     write_markdown_report(

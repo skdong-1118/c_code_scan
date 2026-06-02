@@ -217,8 +217,7 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("## 分析分层", report)
         self.assertIn("CodeGraph 层", report)
         self.assertIn("Heuristic 层", report)
-        self.assertIn("Manual Review 层", report)
-        self.assertIn("人工排查", report)
+        self.assertIn("生命周期证据层", report)
 
     def test_detects_architecture_risk_categories_from_c_evidence(self):
         cases = {
@@ -233,7 +232,7 @@ class CImpactScanTests(unittest.TestCase):
             categories = scan.detect_risk_categories(evidence, "subsys/net/api.c", "function")
             self.assertIn(expected, categories, evidence)
 
-    def test_architecture_categories_increase_score_and_review(self):
+    def test_architecture_categories_increase_score(self):
         config = scan.default_scan_config("subsys/net")
         symbol = scan.changed_symbol(
             "parse_packet",
@@ -243,12 +242,10 @@ class CImpactScanTests(unittest.TestCase):
         )
 
         score, reasons = scan.score_symbol(symbol, None, config)
-        review = scan.manual_review_items([scan.risk_item("parse_packet", "function", score, reasons, ["subsys/net/protocol/parser.c"])])
 
         self.assertGreaterEqual(score, 8)
         self.assertTrue(any("memory_safety" in reason for reason in reasons))
         self.assertNotIn("security" + "_boundary", symbol["risk_categories"])
-        self.assertEqual("parse_packet", review[0]["subject"])
 
     def test_decodes_utf8_subprocess_output_for_linux_locale(self):
         raw = "中文路径/模块.c -> €\n".encode("utf-8")
@@ -495,6 +492,87 @@ class CImpactScanTests(unittest.TestCase):
         scan.run(["git", "commit", "-m", "ambiguous nbm"], repo)
         return repo
 
+    def _make_git_repo_with_local_variable_change(self, tmp):
+        repo = Path(tmp)
+        scan.run(["git", "init"], repo)
+        scan.run(["git", "config", "user.email", "test@test"], repo)
+        scan.run(["git", "config", "user.name", "test"], repo)
+        source_dir = repo / "fosip" / "nbm"
+        source_dir.mkdir(parents=True)
+        (source_dir / "api.c").write_text(
+            "\n".join(
+                [
+                    "int nbm_api(int flag)",
+                    "{",
+                    "    int ret = flag;",
+                    "    return ret;",
+                    "}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        scan.run(["git", "add", "."], repo)
+        scan.run(["git", "commit", "-m", "initial"], repo)
+        (source_dir / "api.c").write_text(
+            "\n".join(
+                [
+                    "int nbm_api(int flag)",
+                    "{",
+                    "    int ret = flag + 1;",
+                    "    return ret;",
+                    "}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        scan.run(["git", "add", "."], repo)
+        scan.run(["git", "commit", "-m", "local change"], repo)
+        return repo
+
+    def _make_git_repo_with_heap_lifetime_change(self, tmp):
+        repo = Path(tmp)
+        scan.run(["git", "init"], repo)
+        scan.run(["git", "config", "user.email", "test@test"], repo)
+        scan.run(["git", "config", "user.name", "test"], repo)
+        source_dir = repo / "fosip" / "nbm"
+        source_dir.mkdir(parents=True)
+        (source_dir / "session.c").write_text(
+            "\n".join(
+                [
+                    "struct nbm_session { int id; };",
+                    "int nbm_session_open(void)",
+                    "{",
+                    "    struct nbm_session *ctx = 0;",
+                    "    return ctx != 0;",
+                    "}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        scan.run(["git", "add", "."], repo)
+        scan.run(["git", "commit", "-m", "initial"], repo)
+        (source_dir / "session.c").write_text(
+            "\n".join(
+                [
+                    "struct nbm_session { int id; };",
+                    "int nbm_session_open(void)",
+                    "{",
+                    "    struct nbm_session *ctx = malloc(sizeof(*ctx));",
+                    "    list_add(&ctx->node, &g_sessions);",
+                    "    return ctx != 0;",
+                    "}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        scan.run(["git", "add", "."], repo)
+        scan.run(["git", "commit", "-m", "heap lifetime"], repo)
+        return repo
+
     def test_step_discover_outputs_scope(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_git_repo(tmp)
@@ -579,6 +657,70 @@ class CImpactScanTests(unittest.TestCase):
                 self.assertEqual(["fosip/nbm", "product/nbm"], discovery["subsystem_resolution_candidates"])
             finally:
                 os.chdir(str(old_cwd))
+
+    def test_local_variable_change_expands_enclosing_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo_with_local_variable_change(tmp)
+            config = scan.default_scan_config("fosip/nbm")
+
+            symbols = scan.extract_symbols(repo, "HEAD~1..HEAD", 20, config)
+            selected, reasons = scan.select_symbols_for_expansion(
+                symbols,
+                [scan.risk_item("nbm_api", "local-function-context", 8, ["local function context changed"], ["fosip/nbm/api.c"])],
+                {"focus_symbols": []},
+            )
+
+        self.assertEqual(["nbm_api"], [symbol["name"] for symbol in symbols])
+        self.assertEqual("local-function-context", symbols[0]["kind"])
+        self.assertIn("ret = flag + 1", symbols[0]["evidence"])
+        self.assertIn("nbm_api", selected)
+        self.assertEqual("local change in enclosing function", reasons["nbm_api"])
+
+    def test_heap_lifetime_change_expands_enclosing_function_with_lifecycle_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo_with_heap_lifetime_change(tmp)
+            config = scan.default_scan_config("fosip/nbm")
+
+            symbols = scan.extract_symbols(repo, "HEAD~1..HEAD", 20, config)
+            risks = scan.build_risk_items([], symbols, [], config)
+            selected, reasons = scan.select_symbols_for_expansion(symbols, risks, {"focus_symbols": []})
+
+        self.assertEqual(["nbm_session_open"], sorted(set(symbol["name"] for symbol in symbols)))
+        self.assertTrue(any(symbol["kind"] == "memory-lifetime" for symbol in symbols))
+        self.assertTrue(any("heap/object lifetime evidence" in symbol.get("evidence_role", "") for symbol in symbols))
+        self.assertTrue(any("malloc" in symbol["evidence"] for symbol in symbols))
+        self.assertTrue(any("list_add" in symbol["evidence"] for symbol in symbols))
+        self.assertIn("nbm_session_open", selected)
+        self.assertIn(reasons["nbm_session_open"], ["memory-lifetime symbol", "high-risk symbol (score >= 8)"])
+
+    def test_report_uses_lifecycle_evidence_without_removed_review_section(self):
+        config = scan.default_scan_config("fosip/nbm")
+        risk = scan.risk_item(
+            "nbm_session_open",
+            "memory-lifetime",
+            10,
+            ["memory allocation/lifetime related change"],
+            ["fosip/nbm/session.c"],
+            ["memory_leak"],
+        )
+
+        text = scan.markdown_report(
+            "HEAD~1..HEAD",
+            scan.codegraph_status("off"),
+            [],
+            [],
+            [],
+            [risk],
+            {"subsystems": []},
+            config,
+            [],
+            scan.build_architecture_risk_summary([risk]),
+            [],
+        )
+
+        self.assertNotIn("必须" + "人工 " + "Review", text)
+        self.assertNotIn("Manual " + "Review 层", text)
+        self.assertIn("生命周期风险证据", text)
 
     def test_discover_clears_previous_scan_artifacts_before_starting(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -723,7 +865,7 @@ class CImpactScanTests(unittest.TestCase):
         for term in removed_terms:
             self.assertNotIn(term, combined)
 
-    def test_pointer_alias_lifetime_scores_high_and_requires_review(self):
+    def test_pointer_alias_lifetime_scores_high_and_reports_lifecycle_evidence(self):
         symbol = scan.changed_symbol(
             "register_cb",
             "core/session/session.c",
@@ -732,14 +874,10 @@ class CImpactScanTests(unittest.TestCase):
         )
 
         score, reasons = scan.score_symbol(symbol, None, scan.default_scan_config())
-        review = scan.manual_review_items([
-            scan.risk_item(symbol["name"], symbol["kind"], score, reasons, [symbol["file"]], symbol["risk_categories"])
-        ])
 
         self.assertIn("pointer_alias_lifetime", symbol["risk_categories"])
         self.assertGreaterEqual(score, 8)
         self.assertTrue(any("opaque" in reason.lower() or "pointer alias" in reason.lower() for reason in reasons))
-        self.assertTrue(review)
 
     def test_pointer_alias_report_section_is_present(self):
         config = scan.default_scan_config()
