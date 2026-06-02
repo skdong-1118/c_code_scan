@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Deterministic C regression impact scanner for weak intranet agents.
 
-Python 3.6 compatible. The script favors portable Windows behavior:
-no shell pipelines, no Unix-only tools, bounded output, and JSON artifacts
-for Claude Code summarization.
+Python 3.6 compatible. The script is designed for Linux deployment with
+bounded subprocess output and JSON artifacts for Claude Code summarization.
 """
 
 import argparse
@@ -44,28 +43,27 @@ MEMORY_RE = re.compile(
 )
 POINTER_ALIAS_RE = re.compile(
     r"(\bvoid\s*\*\s*(opaque|ctx|context|user_data|userdata|priv|private|cookie)\b)"
-    r"|(\b(callback|cb|handler|hook|thread|timer|task|work|async|register|unregister)\b.*\b(opaque|ctx|context|user_data|userdata|priv|private|cookie)\b)"
+    r"|(\b(callback|cb|handler|hook|register|unregister)\b.*\b(opaque|ctx|context|user_data|userdata|priv|private|cookie)\b)"
     r"|(->\s*[A-Za-z_]\w*\s*=\s*[A-Za-z_]\w*)"
     r"|(\b[A-Za-z_]\w*\s*=\s*[A-Za-z_]\w*\s*;)"
     r"|(\b(list_(add|add_tail)|hlist_add|hash_(add|insert)|map_(put|insert)|queue_push|enqueue|cache_(add|insert)|rb_(insert|link)|tree_(insert))\b)"
-    r"|(\b(thread_create|pthread_create|timer_start|timer_add|schedule_work|queue_work|callback_register|register_cb)\b)",
+    r"|(\b(callback_register|register_cb)\b)",
     re.I,
 )
 FIELD_ACCESS_RE = re.compile(r"(->|\.)\s*[A-Za-z_]\w*\b|\boffsetof\s*\(|\bcontainer_of\s*\(|\bsizeof\s*\(", re.I)
-SEMANTIC_RE = re.compile(r"\b(return|NULL|nullptr|errno|error|goto|timeout|retry|len|length|size|owner|lock|unlock)\b", re.I)
+SEMANTIC_RE = re.compile(r"\b(return|NULL|nullptr|errno|error|goto|len|length|size|owner)\b", re.I)
 ARCH_RISK_PATTERNS = [
     ("memory_safety", re.compile(r"\b(memcpy|memmove|memset|strcpy|strncpy|strcat|sprintf|snprintf|overflow|underflow|bounds?|index|len|length|size)\b", re.I)),
     ("memory_leak", re.compile(r"\b(malloc|calloc|realloc|strdup|free|release|destroy|cleanup|refcount|refcnt|retain|alloc|dealloc|list_(add|add_tail|del|del_init)|hlist_(add|del)|rb_(insert|erase|link)|tree_(insert|remove|erase|delete)|hash_(add|del|remove|insert)|queue_(push|pop|remove)|enqueue|dequeue|cache_(add|insert|remove|delete)|map_(put|insert|remove|erase))\b", re.I)),
     ("abi_layout", re.compile(r"\b(struct|union|enum|typedef|sizeof|pragma\s+pack|packed|__attribute__|dllexport|visibility|export)\b", re.I)),
-    ("concurrency", re.compile(r"\b(mutex|lock|unlock|spin|rwlock|atomic|thread|task|timer|interrupt|semaphore|sem_|wait|signal|pthread)\b", re.I)),
     ("error_handling", re.compile(r"\b(return|errno|error|err_|goto|fail|cleanup|NULL|nullptr|invalid|denied)\b", re.I)),
     ("ownership_lifetime", re.compile(r"\b(owner|ownership|refcount|refcnt|retain|release|destroy|init|deinit|close|open|cleanup|lifetime|list_(add|add_tail|del|del_init)|hlist_(add|del)|rb_(insert|erase|link)|tree_(insert|remove|erase|delete)|hash_(add|del|remove|insert)|queue_(push|pop|remove)|enqueue|dequeue|cache_(add|insert|remove|delete)|map_(put|insert|remove|erase))\b", re.I)),
-    ("pointer_alias_lifetime", re.compile(r"\b(void\s*\*|opaque|ctx|context|user_data|userdata|priv|private|cookie|container_of|offsetof|list_(add|add_tail)|hlist_add|hash_(add|insert)|map_(put|insert)|queue_push|enqueue|cache_(add|insert)|thread_create|pthread_create|timer_start|schedule_work|queue_work|callback_register|register_cb)\b|->\s*[A-Za-z_]\w*\s*=", re.I)),
+    ("pointer_alias_lifetime", re.compile(r"\b(void\s*\*|opaque|ctx|context|user_data|userdata|priv|private|cookie|container_of|offsetof|list_(add|add_tail)|hlist_add|hash_(add|insert)|map_(put|insert)|queue_push|enqueue|cache_(add|insert)|callback_register|register_cb)\b|->\s*[A-Za-z_]\w*\s*=", re.I)),
     ("macro_config", re.compile(r"^\s*#\s*(define|if|ifdef|ifndef|elif|undef)\b|\b(CONFIG_|FEATURE_|ENABLE_|DISABLE_)\w*", re.I)),
     ("protocol_compatibility", re.compile(r"\b(protocol|version|endian|hton|ntoh|tlv|json|field|opcode|message|packet|frame|cmd_|schema)\b", re.I)),
     ("state_machine_timing", re.compile(r"\b(state|event|timer|timeout|retry|transition|start|stop|order|sequence|schedule|delay)\b", re.I)),
     ("callback_dispatch", re.compile(r"\b(callback|cb|ops|vtable|handler|dispatch|command|cmd_table|register|unregister|hook)\b|(?:\*\s*[A-Za-z_]\w*\s*\()", re.I)),
-    ("performance_resource", re.compile(r"\b(cpu|memory|socket|fd|file|thread|timer|poll|select|epoll|loop|while|for|cache|alloc|queue)\b", re.I)),
+    ("performance_resource", re.compile(r"\b(cpu|memory|socket|fd|file|poll|select|epoll|loop|while|for|cache|alloc|queue)\b", re.I)),
     ("security_boundary", re.compile(r"\b(auth|permission|privilege|token|password|credential|path|command|injection|validate|sanitize|overflow|acl|role)\b", re.I)),
     ("build_deploy", re.compile(r"\b(makefile|cmakelists|target_link_libraries|install|deploy|link|library|ldflags|cflags|symbol|export)\b", re.I)),
 ]
@@ -73,7 +71,6 @@ ARCH_CATEGORY_WEIGHTS = {
     "memory_safety": 5,
     "memory_leak": 5,
     "abi_layout": 5,
-    "concurrency": 4,
     "error_handling": 3,
     "ownership_lifetime": 4,
     "pointer_alias_lifetime": 5,
@@ -85,6 +82,15 @@ ARCH_CATEGORY_WEIGHTS = {
     "security_boundary": 5,
     "build_deploy": 3,
 }
+LATEST_COMMIT_RANGE = "HEAD~1..HEAD"
+DEFAULT_ENABLED_RISK_CATEGORIES = [
+    "memory_leak",
+    "memory_safety",
+    "abi_layout",
+    "pointer_alias_lifetime",
+    "error_handling",
+    "callback_dispatch",
+]
 
 
 def detect_risk_categories(evidence, file_path, kind):
@@ -132,6 +138,7 @@ def default_scan_config(scope_path=None):
         "high_risk_paths": [scoped_prefix(scope_path, p) for p in ["platform/", "protocol/", "storage/", "upgrade/", "adapter/", "common/"]],
         "memory_sensitive_paths": [scoped_prefix(scope_path, p) for p in ["memory/", "mem/", "buffer/", "session/", "core/"]],
         "low_risk_paths": [scoped_prefix(scope_path, p) for p in ["test/", "tests/", "doc/", "docs/"]],
+        "enabled_risk_categories": list(DEFAULT_ENABLED_RISK_CATEGORIES),
         "subsystems": {},
     }
 
@@ -312,9 +319,44 @@ def codegraph_status(mode):
         "init_attempted": False,
         "init_succeeded": False,
         "used_for_symbols": 0,
-        "fallback_used_for_symbols": 0,
         "errors": [],
     }
+
+
+def validate_commit_range(commit_range):
+    normalized = (commit_range or "").strip()
+    if normalized == LATEST_COMMIT_RANGE:
+        return True, ""
+    return False, "only the current branch latest commit is supported; use --range {}".format(LATEST_COMMIT_RANGE)
+
+
+def enabled_risk_categories(config=None):
+    if not config:
+        return None
+    values = config.get("enabled_risk_categories")
+    if not values:
+        return None
+    return set(values)
+
+
+def filter_enabled_risk_categories(categories, config=None):
+    enabled = enabled_risk_categories(config)
+    if enabled is None:
+        return categories
+    return [category for category in categories if category in enabled]
+
+
+def apply_focus_to_scan_config(config, subsystem, focus):
+    for key in ("legacy_paths", "public_interfaces"):
+        values = focus.get(key, [])
+        if values:
+            for value in values:
+                normalized = scoped_prefix(subsystem, str(value))
+                if normalized and normalized not in config.setdefault(key, []):
+                    config[key].append(normalized)
+    if focus.get("focus_risks"):
+        config["enabled_risk_categories"] = list(focus["focus_risks"])
+    return config
 
 
 FOCUS_CONFIG_NAME = ".impact-scan-focus.yml"
@@ -512,7 +554,7 @@ def decode_process_output(data):
         return ""
     if isinstance(data, str):
         return data
-    for encoding in ("utf-8-sig", "utf-8", "gbk", "mbcs"):
+    for encoding in ("utf-8-sig", "utf-8"):
         try:
             return data.decode(encoding)
         except (UnicodeDecodeError, LookupError):
@@ -667,7 +709,7 @@ def extract_symbols(repo, commit_range, max_symbols, config=None):
 
 
 def find_codegraph():
-    return shutil.which("codegraph") or shutil.which("codegraph.exe")
+    return shutil.which("codegraph")
 
 
 def has_codegraph_index(repo):
@@ -736,28 +778,6 @@ def extract_paths_from_text(text, limit):
     return paths
 
 
-def rg_references(repo, symbol, limit):
-    exe = shutil.which("rg") or shutil.which("rg.exe")
-    if not exe:
-        return []
-    pattern = r"\b{}\b".format(re.escape(symbol))
-    result = run(
-        [exe, "--files-with-matches", "--glob", "*.c", "--glob", "*.h", pattern, "."],
-        repo,
-        check=False,
-    )
-    paths = []
-    seen = set()
-    for line in result.stdout.splitlines():
-        path = normalize(line.strip().lstrip("./"))
-        if path and path not in seen:
-            paths.append(path)
-            seen.add(path)
-        if len(paths) >= limit:
-            break
-    return paths
-
-
 def gather_references(repo, symbols, limit, codegraph, config=None):
     results = []
     for symbol in symbols:
@@ -766,11 +786,6 @@ def gather_references(repo, symbols, limit, codegraph, config=None):
         if files:
             backend = "codegraph"
             codegraph["used_for_symbols"] += 1
-        else:
-            files = rg_references(repo, symbol["name"], limit)
-            if files:
-                backend = "rg"
-                codegraph["fallback_used_for_symbols"] += 1
         results.append(reference_result(symbol["name"], backend, files, config))
     return results
 
@@ -831,13 +846,11 @@ def score_symbol(symbol, refs, config=None):
         evidence = symbol.get("evidence", "")
         if re.search(r"\b(opaque|ctx|context|user_data|userdata|priv|private|cookie|callback|register_cb|callback_register)\b", evidence, re.I):
             reasons.append("callback opaque/context pointer alias lifetime change")
-        elif re.search(r"\b(thread_create|pthread_create|timer_start|schedule_work|queue_work|async|task|work)\b", evidence, re.I):
-            reasons.append("async/thread/timer pointer escape lifetime change")
         elif re.search(r"\b(list_|hlist_|hash_|map_|queue_|enqueue|cache_|rb_|tree_)", evidence, re.I):
             reasons.append("container pointer escape ownership change")
         else:
             reasons.append("pointer alias/field ownership lifetime change")
-    for category in symbol.get("risk_categories", []):
+    for category in filter_enabled_risk_categories(symbol.get("risk_categories", []), config):
         weight = ARCH_CATEGORY_WEIGHTS.get(category, 0)
         if weight:
             score += weight
@@ -898,7 +911,7 @@ def build_risk_items(files, symbols, refs, config=None):
                 score,
                 reasons,
                 list(dict.fromkeys(evidence)),
-                symbol.get("risk_categories", []),
+                filter_enabled_risk_categories(symbol.get("risk_categories", []), config),
             )
         )
     return sorted(risk_items, key=lambda x: (-x["score"], x["subject"]))
@@ -962,8 +975,6 @@ def checks_for_categories(categories, legacy_hit):
         checks.append("执行 memory-lifetime 检查，覆盖 allocation/free、refcount、cleanup 和 error paths。")
     if "pointer_alias_lifetime" in categories:
         checks.append("执行 pointer alias/lifetime 检查：按对象类型、字段访问、ownership API 和逃逸点追踪，不依赖变量名。")
-    if "concurrency" in categories:
-        checks.append("压测 concurrency paths，并 review lock/unlock、atomic、timer 和 thread interactions。")
     if "protocol_compatibility" in categories:
         checks.append("验证 protocol compatibility，覆盖旧 peer/client data 和 version negotiation。")
     if "state_machine_timing" in categories:
@@ -971,7 +982,7 @@ def checks_for_categories(categories, legacy_hit):
     if "callback_dispatch" in categories:
         checks.append("Review callback、ops table、handler registration 和 dispatch table behavior。")
     if "performance_resource" in categories:
-        checks.append("检查 CPU、memory、file/socket/thread/timer resources 和 loop complexity。")
+        checks.append("检查 CPU、memory、file/socket resources 和 loop complexity。")
     if "security_boundary" in categories:
         checks.append("Review auth、permission、input validation 和 path/command handling。")
     if "build_deploy" in categories:
@@ -1030,7 +1041,7 @@ def build_subsystem_analysis(files, refs, risks, impact_paths, config):
         entry = entry_for(path["subsystem"])
         entry["symbols"].append(path["symbol"])
         entry["referenced_files"].append(path["target_file"])
-        entry["why_impacted"].append("CodeGraph/fallback impact path reaches this subsystem")
+        entry["why_impacted"].append("CodeGraph impact path reaches this subsystem")
         if path.get("is_legacy"):
             entry["legacy_hit"] = True
             entry["why_impacted"].append("impact path reaches legacy path，存在回归风险放大点")
@@ -1076,7 +1087,7 @@ def write_json(path, data):
 
 
 def write_markdown_report(path, text):
-    path.write_text(text, encoding="utf-8-sig")
+    path.write_text(text, encoding="utf-8")
 
 
 def manual_review_items(risks):
@@ -1089,7 +1100,6 @@ def manual_review_items(risks):
         "memory allocation/lifetime related change",
         "pointer alias/field ownership lifetime change",
         "callback opaque/context pointer alias lifetime change",
-        "async/thread/timer pointer escape lifetime change",
         "container pointer escape ownership change",
         "semantic behavior keyword changed",
         "architecture risk",
@@ -1117,7 +1127,7 @@ def markdown_report(
     top_level = risks[0]["level"] if risks else "low"
     max_score = risks[0]["score"] if risks else 0
     backends = set(r["backend"] for r in refs if r["backend"] != "none")
-    confidence = "high" if "codegraph" in backends else "medium" if "rg" in backends else "low"
+    confidence = "high" if "codegraph" in backends else "low"
     lines = [
         "# C 回归影响扫描报告",
         "",
@@ -1129,7 +1139,6 @@ def markdown_report(
         "- CodeGraph 模式: `{}`".format(codegraph["mode"]),
         "- CodeGraph 可用: {}".format("是" if codegraph["available"] else "否"),
         "- CodeGraph 命中的 symbol 数: {}".format(codegraph["used_for_symbols"]),
-        "- fallback 命中的 symbol 数: {}".format(codegraph["fallback_used_for_symbols"]),
         "- changed files: {}".format(len(files)),
         "- changed symbols: {}".format(len(symbols)),
         "- public interface paths: {}".format(", ".join(config["public_interfaces"][:8])),
@@ -1138,7 +1147,7 @@ def markdown_report(
         "## 分析分层",
         "- CodeGraph 层：用于查找 function/symbol reference、callers/callees、include/import 关系和 subsystem 影响面；它提供影响路径 evidence，但不单独证明变更安全。",
         "- Heuristic 层：根据变量名、函数名、路径、diff 内容、risk category 和 deterministic scoring 识别风险信号；这些结论是 risk triage，不是完整 data-flow proof。",
-        "- Manual Review 层：对内存 ownership、callback/async flow、struct field 传递、alias/data-flow、error cleanup path 等静态工具难以确认的项目，输出到报告的 `必须人工 Review`，要求人工排查。",
+        "- Manual Review 层：对内存 ownership、callback flow、struct field 传递、alias/data-flow、error cleanup path 等静态工具难以确认的项目，输出到报告的 `必须人工 Review`，要求人工排查。",
         "",
         "## 高/中风险项",
         "",
@@ -1273,11 +1282,6 @@ def markdown_report(
             "- 除非 CodeGraph 本地索引捕获了 function pointer 和 callback 关系，否则相关判断属于 heuristic analysis。",
         ]
     )
-    if codegraph["errors"]:
-        lines.extend(["", "## CodeGraph 说明"])
-        for error in codegraph["errors"][:8]:
-            lines.append("- {}".format(error))
-    return "\n".join(lines) + "\n"
 
     lines.extend(["", "## 指针别名与生命周期关注点", ""])
     if pointer_alias_items:
@@ -1287,13 +1291,19 @@ def markdown_report(
             [
                 "- 不要只按变量名判断安全性；按对象类型、struct 字段、ownership API 和逃逸点追踪。",
                 "- 检查 `void *opaque/user_data/ctx/priv` 是否 cast 回变更对象类型，callback 触发时对象是否仍然存活。",
-                "- 检查对象是否进入 global、struct field、list/hash/map/queue/cache、thread、timer、workqueue 或 callback 注册表。",
+                "- 检查对象是否进入 global、struct field、list/hash/map/queue/cache 或 callback 注册表。",
                 "- 检查新增/修改指针字段是否同步更新 destroy/copy/clone/error-cleanup 路径，避免泄漏、UAF、double free 或浅拷贝。",
-                "- 对 `memcpy/memset/sizeof/offsetof/container_of` 作用于含指针/refcount/lock/list node 的结构体进行人工 review。",
+                "- 对 `memcpy/memset/sizeof/offsetof/container_of` 作用于含指针/refcount/list node 的结构体进行人工 review。",
             ]
         )
     else:
         lines.append("- deterministic rules 未发现 pointer-alias-lifetime 类型的 changed symbol。")
+
+    if codegraph["errors"]:
+        lines.extend(["", "## CodeGraph 说明"])
+        for error in codegraph["errors"][:8]:
+            lines.append("- {}".format(error))
+    return "\n".join(lines) + "\n"
 
 def _step_discover(repo, out, config, codegraph, args, focus):
     """Step 1: Scope discovery. Output changed files and inferred subsystems."""
@@ -1420,11 +1430,6 @@ def _step_expand(repo, out, config, codegraph, args, focus):
             if files_found:
                 backend = "codegraph"
                 codegraph["used_for_symbols"] += 1
-            else:
-                files_found = rg_references(repo, sym["name"], args.max_refs)
-                if files_found:
-                    backend = "rg"
-                    codegraph["fallback_used_for_symbols"] += 1
             refs.append(reference_result(sym["name"], backend, files_found, config))
         else:
             refs.append(reference_result(sym["name"], "skipped", [], config))
@@ -1449,13 +1454,11 @@ def _step_expand(repo, out, config, codegraph, args, focus):
             for name in sorted(selected)
         ],
         "codegraph_hits": codegraph["used_for_symbols"],
-        "fallback_hits": codegraph["fallback_used_for_symbols"],
     })
 
     print("Expansion complete.")
     print("  Expanded {} / {} symbols".format(len(selected), len(symbols)))
-    print("  CodeGraph hits: {}, fallback hits: {}".format(
-        codegraph["used_for_symbols"], codegraph["fallback_used_for_symbols"]))
+    print("  CodeGraph hits: {}".format(codegraph["used_for_symbols"]))
     print("wrote {}".format(out / "expansion_summary.json"))
     return 0
 
@@ -1583,16 +1586,20 @@ def markdown_report_with_focus(
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Scan C change impact for architecture regression risk.")
-    parser.add_argument("--range", default="HEAD~1..HEAD", help="git commit range to scan")
+    parser.add_argument(
+        "--range",
+        default=LATEST_COMMIT_RANGE,
+        help="git commit range to scan. Restricted to the current branch latest commit: {}".format(LATEST_COMMIT_RANGE),
+    )
     parser.add_argument("--out", default=".impact-scan", help="output directory")
     parser.add_argument("--subsystem", default="", help="repo-relative subsystem directory to scan, such as subsys/net")
     parser.add_argument("--max-symbols", type=int, default=200, help="maximum changed symbols to analyze")
     parser.add_argument("--max-refs", type=int, default=50, help="maximum reference files per symbol")
     parser.add_argument(
         "--codegraph-mode",
-        choices=["prefer", "required", "off"],
-        default="prefer",
-        help="CodeGraph usage mode. Default prefers CodeGraph and falls back to rg.",
+        choices=["required", "off"],
+        default="required",
+        help="CodeGraph usage mode. Default requires CodeGraph. No reference-search fallback is used.",
     )
     parser.add_argument(
         "--init-codegraph",
@@ -1627,6 +1634,11 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
+    range_ok, range_error = validate_commit_range(args.range)
+    if not range_ok:
+        print("error: {}".format(range_error), file=sys.stderr)
+        return 4
+
     cwd = Path.cwd()
     try:
         repo = ensure_git_repo(cwd)
@@ -1649,15 +1661,7 @@ def main(argv=None):
     # Scope override from focus config
     subsystem = args.subsystem or focus.get("scope_override") or ""
     config = load_scan_config(repo, subsystem)
-
-    # Merge focus config legacy_paths / public_interfaces into scan config
-    for key in ("legacy_paths", "public_interfaces"):
-        values = focus.get(key, [])
-        if values:
-            for v in values:
-                normalized = scoped_prefix(subsystem, str(v))
-                if normalized and normalized not in config.setdefault(key, []):
-                    config[key].append(normalized)
+    apply_focus_to_scan_config(config, subsystem, focus)
 
     codegraph = prepare_codegraph(repo, args.codegraph_mode, args.init_codegraph)
     if args.codegraph_mode == "required" and not codegraph["available"]:

@@ -1,6 +1,6 @@
 import importlib.util
-import codecs
 import json
+from unittest import mock
 import tempfile
 import unittest
 from pathlib import Path
@@ -87,6 +87,53 @@ class CImpactScanTests(unittest.TestCase):
         self.assertGreaterEqual(score, 8)
         self.assertTrue(any("memory" in reason.lower() for reason in reasons))
 
+    def test_default_enabled_risks_exclude_unneeded_categories(self):
+        config = scan.default_scan_config()
+
+        self.assertEqual(
+            [
+                "memory_leak",
+                "memory_safety",
+                "abi_layout",
+                "pointer_alias_lifetime",
+                "error_handling",
+                "callback_dispatch",
+            ],
+            config["enabled_risk_categories"],
+        )
+
+    def test_focus_risks_override_enabled_categories(self):
+        config = scan.default_scan_config()
+        focus = {
+            "focus_risks": ["memory_leak", "callback_dispatch"],
+            "legacy_paths": [],
+            "public_interfaces": [],
+        }
+
+        scan.apply_focus_to_scan_config(config, "", focus)
+
+        self.assertEqual(["memory_leak", "callback_dispatch"], config["enabled_risk_categories"])
+
+    def test_thread_and_lock_evidence_is_not_classified_as_concurrency(self):
+        config = scan.default_scan_config()
+        symbol = scan.changed_symbol(
+            "timer_start",
+            "nio/timer.c",
+            "function",
+            "pthread_mutex_unlock(&ctx->lock); timer_start(ctx->timer, timeout);",
+        )
+
+        score, reasons = scan.score_symbol(symbol, None, config)
+        risks = scan.build_risk_items([], [symbol], [], config)
+
+        self.assertIn("state_machine_timing", symbol["risk_categories"])
+        self.assertNotIn("concurrency", symbol["risk_categories"])
+        self.assertFalse(any("concurrency" in reason for reason in reasons))
+        self.assertFalse(any("semantic behavior keyword" in reason for reason in reasons))
+        self.assertFalse(any("state_machine_timing" in reason for reason in reasons))
+        self.assertNotIn("concurrency", risks[0]["risk_categories"])
+        self.assertNotIn("state_machine_timing", risks[0]["risk_categories"])
+
     def test_container_insert_change_is_memory_lifetime_risk(self):
         symbol = scan.changed_symbol(
             "list_add_tail",
@@ -158,7 +205,7 @@ class CImpactScanTests(unittest.TestCase):
 
     def test_markdown_report_documents_three_analysis_layers(self):
         config = scan.default_scan_config("subsys/net")
-        codegraph = scan.codegraph_status("prefer")
+        codegraph = scan.codegraph_status("required")
         report = scan.markdown_report(
             "HEAD~1..HEAD",
             codegraph,
@@ -184,7 +231,6 @@ class CImpactScanTests(unittest.TestCase):
             "memory_safety": "memcpy(dst, src, len + 1);",
             "memory_leak": "ctx = malloc(sizeof(*ctx)); return -1;",
             "abi_layout": "struct api_msg { int version; long size; };",
-            "concurrency": "pthread_mutex_unlock(&ctx->lock);",
             "error_handling": "if (!ctx) return ERR_INVALID;",
             "ownership_lifetime": "refcount_dec(&obj->refcnt); release(obj);",
             "macro_config": "#ifdef CONFIG_FEATURE_X",
@@ -214,10 +260,11 @@ class CImpactScanTests(unittest.TestCase):
 
         self.assertGreaterEqual(score, 8)
         self.assertTrue(any("memory_safety" in reason for reason in reasons))
-        self.assertTrue(any("security_boundary" in reason for reason in reasons))
+        self.assertIn("security_boundary", symbol["risk_categories"])
+        self.assertFalse(any("security_boundary" in reason for reason in reasons))
         self.assertEqual("parse_packet", review[0]["subject"])
 
-    def test_decodes_utf8_subprocess_output_without_gbk_locale(self):
+    def test_decodes_utf8_subprocess_output_for_linux_locale(self):
         raw = "中文路径/模块.c -> €\n".encode("utf-8")
 
         decoded = scan.decode_process_output(raw)
@@ -225,15 +272,50 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("中文路径/模块.c", decoded)
         self.assertIn("€", decoded)
 
-    def test_markdown_report_is_written_with_utf8_bom_for_windows(self):
+    def test_markdown_report_is_written_as_plain_utf8_for_linux(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "risk_report.md"
 
             scan.write_markdown_report(path, "# 中文报告\n")
 
             raw = path.read_bytes()
-        self.assertTrue(raw.startswith(codecs.BOM_UTF8))
-        self.assertEqual("# 中文报告\n", raw.decode("utf-8-sig"))
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
+        self.assertEqual("# 中文报告\n", raw.decode("utf-8"))
+
+    def test_tool_lookup_uses_codegraph_only(self):
+        with mock.patch.object(scan.shutil, "which", return_value=None) as which:
+            scan.find_codegraph()
+
+        looked_up = [call.args[0] for call in which.call_args_list]
+        self.assertEqual(["codegraph"], looked_up)
+
+    def test_required_codegraph_mode_does_not_use_reference_fallback(self):
+        codegraph = scan.codegraph_status("required")
+        codegraph["executable"] = "/usr/bin/codegraph"
+        symbols = [scan.changed_symbol("api_open", "src/api.c", "function", "int api_open(void);")]
+
+        with mock.patch.object(scan, "run_codegraph_impact", return_value=[]):
+            refs = scan.gather_references(Path("."), symbols, 50, codegraph, scan.default_scan_config())
+
+        self.assertEqual("none", refs[0]["backend"])
+
+    def test_default_cli_requires_codegraph(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo(tmp)
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                with mock.patch.object(scan, "find_codegraph", return_value=None):
+                    ret = scan.main([])
+
+                self.assertEqual(3, ret)
+            finally:
+                os.chdir(str(old_cwd))
+
+    def test_cli_rejects_prefer_codegraph_mode(self):
+        with self.assertRaises(SystemExit):
+            scan.main(["--codegraph-mode", "prefer"])
 
 
     def test_focus_config_loaded_from_yaml_file(self):
@@ -360,7 +442,7 @@ class CImpactScanTests(unittest.TestCase):
             scan.risk_item("doc_note", "function", 6, ["doc only"], ["docs/readme.md"]),
         ]
         refs = [
-            scan.reference_result("api_open", "rg", ["tests/api_test.c", "src/client.c"], config),
+            scan.reference_result("api_open", "codegraph", ["tests/api_test.c", "src/client.c"], config),
         ]
 
         filtered_symbols = scan.filter_symbols_by_focus(symbols, focus)
@@ -407,6 +489,19 @@ class CImpactScanTests(unittest.TestCase):
             finally:
                 os.chdir(str(old_cwd))
 
+    def test_rejects_non_latest_commit_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo(tmp)
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                ret = scan.main(["--range", "HEAD~2..HEAD", "--codegraph-mode", "off"])
+
+                self.assertEqual(4, ret)
+            finally:
+                os.chdir(str(old_cwd))
+
     def test_step_triage_outputs_triage_summary_and_focus_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_git_repo(tmp)
@@ -450,8 +545,8 @@ class CImpactScanTests(unittest.TestCase):
                 self.assertEqual(0, ret)
                 self.assertTrue((out / "risk_report.md").exists())
                 raw = (out / "risk_report.md").read_bytes()
-                self.assertTrue(raw.startswith(codecs.BOM_UTF8))
-                text = raw.decode("utf-8-sig")
+                self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
+                text = raw.decode("utf-8")
                 self.assertIn("用户重点关注覆盖", text)
             finally:
                 os.chdir(str(old_cwd))

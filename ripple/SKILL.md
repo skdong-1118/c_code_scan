@@ -1,6 +1,6 @@
 ---
 name: ripple
-description: Use in Claude Code whenever the user asks whether the latest change, recent modification, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, memory safety, ABI/layout, concurrency, error handling, ownership/lifetime, macro/config behavior, protocol compatibility, state timing, callback dispatch, performance/resource usage, security boundaries, build/deploy behavior, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Prioritize local CodeGraph impact scanning, then fall back to ripgrep and deterministic architecture risk rules. The final deliverable must be a Chinese Markdown detection report.
+description: Use in Claude Code whenever the user asks whether the current branch latest commit, last commit, HEAD commit, or HEAD~1..HEAD change affects existing features, old features, legacy behavior, regression risk, subsystem behavior, public C interfaces, memory leaks, memory safety, ABI/layout, error handling, ownership/lifetime, pointer alias/lifetime, callback dispatch, or stable functionality in a C codebase. Trigger for natural requests like "分析最近一次修改对已有功能的影响", "检查最近提交有没有影响老功能", "看这次改动是否有回归风险", "分析这个子系统最近修改的影响", or "检查 C 代码改动是否可能导致内存泄漏". Analyze only the current branch latest commit with range HEAD~1..HEAD; never analyze older commits, multiple commits, other branches, or arbitrary commit ranges. Use built-in risk categories only: memory_leak, memory_safety, abi_layout, pointer_alias_lifetime, error_handling, callback_dispatch. Require local CodeGraph impact scanning with --codegraph-mode required; do not use Grep, ripgrep, rg, or Claude Code's Grep tool for reference search. The final deliverable must be a Chinese Markdown detection report.
 ---
 
 # Guided C Regression Impact Scan
@@ -8,6 +8,14 @@ description: Use in Claude Code whenever the user asks whether the latest change
 ## Purpose
 
 Use this skill in Claude Code to answer: "Did the latest C change introduce architecture-level regression risk for existing subsystem behavior?"
+
+Hard scope limit: this skill only analyzes the current branch latest commit. The commit range is fixed to:
+
+```
+HEAD~1..HEAD
+```
+
+Do not analyze older commits, multiple commits, other branches, merge-base ranges, or custom commit ranges. If the user asks for a different commit range, stop and explain that `ripple` is intentionally limited to the current branch latest commit.
 
 This is a **guided workflow skill** — the agent collects user focus, runs deterministic tools for evidence, applies fixed risk rules, and generates a template-based report. It does NOT ask the model to read the entire repository or independently judge "is this safe."
 
@@ -45,10 +53,10 @@ If the user's request is simply "分析最近一次修改对已有功能的影�
 
 Checkpoint rule:
 
-- Step 0 asks for focus and waits for the user's answer.
+- Step 0 uses latest-commit inference and built-in risk categories; do not stop for user focus unless inference is clearly insufficient.
 - Step 1 runs `discover`, summarizes scope, then waits for confirmation.
 - Step 2 runs `triage`, summarizes risk counts and expansion candidates, then waits for confirmation.
-- Step 3 runs `expand`, summarizes reference evidence and CodeGraph/rg status, then waits for confirmation.
+- Step 3 runs `expand`, summarizes reference evidence and CodeGraph status, then waits for confirmation.
 - Step 4 summarizes key evidence and waits for confirmation before final report.
 - Step 5 runs `report`, verifies `.impact-scan/risk_report.md`, then sends the final completion reply with the path and short summary.
 
@@ -61,7 +69,7 @@ Do not run Step 1 through Step 5 in one uninterrupted sequence in guided mode.
 Best for interactive use with a local agent. The agent walks through each step with user confirmation at key checkpoints:
 
 ```
-Step 0: Focus intake  → 用户提供重点
+Step 0: Focus intake  → 自动推断 scope / 使用内置风险项
 Step 1: Scope discovery → 发现扫描范围 → 用户确认
 Step 2: Risk triage → 初步风险分诊
 Step 3: Focused expansion → 定向扩展影响面
@@ -81,11 +89,44 @@ This runs all steps at once and outputs `.impact-scan/risk_report.md`.
 
 ## Guided Workflow
 
-### Step 0: Focus Intake (用户提供重点)
+### Step 0: Focus Intake (自动推断为主)
 
-Before scanning, ask the user what they care about. Guide them to provide a focus config. This reduces guesswork for weak models.
+Do not ask the user to choose subsystem, focus symbols, focus risks, or ignore paths by default.
 
-The user can provide focus via:
+Default behavior:
+
+- infer subsystem from the current branch latest commit changed files;
+- do not require user-specified focus symbols;
+- infer low-value ignore paths from changed files and configured low-risk paths;
+- use the built-in enabled risk categories only.
+
+Built-in enabled risk categories:
+
+```text
+memory_leak
+memory_safety
+abi_layout
+pointer_alias_lifetime
+error_handling
+callback_dispatch
+```
+
+Do not check these categories by default:
+
+```text
+protocol_compatibility
+state_machine_timing
+macro_config
+performance_resource
+security_boundary
+build_deploy
+```
+
+The target systems are single-threaded. Do not analyze multi-threading, multi-process concurrency, lock/unlock, mutex, atomic, pthread, fork/process, interrupt, or scheduler interactions.
+
+Only ask the user for Step 0 input if project-specific background is necessary and cannot be inferred from the latest commit.
+
+Optional focus config is still supported:
 
 **Option A: Focus config file** (`.impact-scan-focus.yml` in repo root):
 
@@ -97,7 +138,7 @@ focus_symbols:
 focus_risks:
   - memory_leak
   - abi_layout
-  - protocol_compatibility
+  - callback_dispatch
 ignore_paths:
   - tests/
   - docs/
@@ -111,22 +152,13 @@ notes:
   - session 重复创建销毁不能泄漏
 ```
 
-**Option B: CLI flags** (quick, no file needed):
+**Option B: CLI flags** (optional override):
 
 ```
 --focus-symbols api_open,session_alloc
 --focus-risks memory_leak,abi_layout
 --ignore-paths tests/,docs/
 ```
-
-If the user hasn't provided focus, ask:
-
-> 请告诉我你最关心什么：
-> - 哪些 subsystem 需要重点检查？
-> - 哪些 symbol 不能出问题？
-> - 哪些风险类别最关注（memory_leak / abi_layout / protocol_compatibility / ...）？
-> - 哪些路径可以忽略（tests/ / docs/）？
-> - 有什么项目特殊背景需要我知道？
 
 The scanner will read focus from `.impact-scan-focus.yml` automatically. CLI flags override file config.
 
@@ -179,7 +211,7 @@ Only expand references for:
 - high-risk symbols (score >= 8)
 - public interface symbols
 - memory-lifetime symbols
-- pointer-alias/lifetime symbols, especially `void *opaque/user_data/ctx/priv`, struct field assignments, container inserts, callback/thread/timer escape points
+- pointer-alias/lifetime symbols, especially `void *opaque/user_data/ctx/priv`, struct field assignments, container inserts, and callback registration escape points
 
 Do NOT expand all changed symbols. This keeps reference search focused and fast:
 
@@ -192,15 +224,15 @@ This outputs `.impact-scan/expansion_summary.json`:
 
 - which symbols were expanded and why
 - reference counts per expanded symbol
-- CodeGraph vs fallback hits
+- CodeGraph reference hits
 
 Tool strategy (internal, don't expose to user unless asked):
 
 ```
-CodeGraph → rg fallback → heuristic only
+CodeGraph required → heuristic only
 ```
 
-If CodeGraph or rg fails, confidence is lowered — the report will state this explicitly. Don't fabricate impact paths.
+Do not use Grep, ripgrep, `rg`, or Claude Code's Grep tool for reference search. If CodeGraph is missing or fails in required mode, stop and report the CodeGraph problem instead of falling back.
 
 ### Step 4: Evidence Review (用户确认关键证据)
 
@@ -235,7 +267,7 @@ The report includes:
 - **高/中风险项**: table of high and medium risk items
 - **架构风险类别**: aggregated by category
 - **受影响 subsystem 候选**: per-subsystem impact reasons, files, symbols, checks
-- **Reference Evidence**: CodeGraph/rg reference counts
+- **Reference Evidence**: CodeGraph reference counts
 - **Impact Paths**: symbol → file → subsystem chains
 - **必须人工 Review**: mandatory manual review items
 - **内存泄漏关注点**: memory-lifetime specific findings
@@ -243,7 +275,7 @@ The report includes:
 - **建议回归检查**: suggested regression tests
 - **局限性**: scan limitations and confidence caveats
 
-The report is written as UTF-8 with BOM for Windows compatibility.
+The report is written as plain UTF-8 for Linux deployment.
 
 ## Focus Config Reference
 
@@ -326,7 +358,6 @@ low_risk_paths:
 - container ownership change (list/tree/hash/queue/map/cache): +5
 - pointer alias / escaped lifetime change: +5
 - callback opaque/context pointer alias change: +5
-- async/thread/timer pointer escape change: +5
 - semantic behavior keyword changed: +2
 - symbol in public/shared path: +3
 - symbol in high-risk path: +3
@@ -337,22 +368,27 @@ low_risk_paths:
 
 ### Architecture risk category weights
 
+Default enabled categories are limited to:
+
+```text
+memory_leak
+memory_safety
+abi_layout
+pointer_alias_lifetime
+error_handling
+callback_dispatch
+```
+
+The scanner may still detect other architecture category keywords internally, but these categories do not participate in default scoring or report risk summaries unless explicitly overridden.
+
 | Category | Weight |
 |----------|--------|
 | `memory_safety` | +5 |
 | `memory_leak` | +5 |
 | `abi_layout` | +5 |
-| `security_boundary` | +5 |
-| `concurrency` | +4 |
-| `ownership_lifetime` | +4 |
 | `pointer_alias_lifetime` | +5 |
-| `protocol_compatibility` | +4 |
-| `state_machine_timing` | +4 |
 | `callback_dispatch` | +4 |
 | `error_handling` | +3 |
-| `macro_config` | +3 |
-| `performance_resource` | +3 |
-| `build_deploy` | +3 |
 
 ### Risk levels
 
@@ -374,7 +410,7 @@ Deterministic rules identify risk signals from names, paths, diff content, and c
 
 ### Manual Review 层
 
-For risks that static tools cannot resolve — pointer aliasing, ownership transfer, callback/async flow, struct field passing, error cleanup paths — write items into `必须人工 Review`. This reduces manual review scope, not replaces architect judgment. For C pointer risks, do not rely on local variable names; track the object type, struct fields, ownership APIs, and escape points instead.
+For risks that static tools cannot resolve — pointer aliasing, ownership transfer, callback flow, struct field passing, error cleanup paths — write items into `必须人工 Review`. This reduces manual review scope, not replaces architect judgment. For C pointer risks, do not rely on local variable names; track the object type, struct fields, ownership APIs, and escape points instead.
 
 ## Architecture Risk Categories
 
@@ -383,15 +419,14 @@ For risks that static tools cannot resolve — pointer aliasing, ownership trans
 | `memory_safety` | buffer overflow, OOB, UAF, double free, unsafe copy/format |
 | `memory_leak` | alloc/free imbalance, missing cleanup, refcount imbalance, container ops |
 | `abi_layout` | struct/union/enum/typedef layout, packing, alignment, exported symbols |
-| `concurrency` | lock/unlock asymmetry, race, atomic/refcount, thread/timer/interrupt |
 | `error_handling` | return value, error code, goto error, NULL check, cleanup path |
 | `ownership_lifetime` | ownership transfer, init/destroy order, retain/release, container insert/remove |
-| `pointer_alias_lifetime` | same object under different pointer names, void* opaque/user_data/ctx, field/global/container escape, callback/thread/timer lifetime |
+| `pointer_alias_lifetime` | same object under different pointer names, void* opaque/user_data/ctx, field/global/container escape, callback registration lifetime |
 | `macro_config` | macro default, feature flag, platform conditional, build-time behavior |
 | `protocol_compatibility` | wire format, version, endian, opcode, field meaning, persistent data |
 | `state_machine_timing` | state transition, event order, timer, timeout, retry, start/stop |
 | `callback_dispatch` | function pointer table, ops table, handler registration, dispatch |
-| `performance_resource` | CPU, memory peak, file/socket/thread/timer, loop, lock contention |
+| `performance_resource` | CPU, memory peak, file/socket resources, loop complexity |
 | `security_boundary` | auth, permission, input validation, path/command injection, overflow |
 | `build_deploy` | Makefile/CMake, link flags, exported symbols, install/deploy behavior |
 
@@ -415,18 +450,18 @@ C pointer risks must be checked by object identity and lifetime, not by variable
 ### Tracking priority
 
 1. **Type / struct identity**: search `struct xxx *`, `xxx_t *`, casts from `void *`, `sizeof(struct xxx)`, `offsetof(struct xxx, field)`, and `container_of(..., xxx, ...)`.
-2. **Field-level access**: search `->field`, `.field`, added/removed pointer fields, refcount fields, lock/list-node fields, length/capacity fields, and copy/reset code.
+2. **Field-level access**: search `->field`, `.field`, added/removed pointer fields, refcount fields, list-node fields, length/capacity fields, and copy/reset code.
 3. **Ownership API pairs**: match `create/new/alloc/init/get/ref/retain/acquire/open` with `free/destroy/deinit/put/unref/release/close/cleanup`.
-4. **Escape points**: inspect assignment into `obj->field`, globals/statics, list/hash/map/queue/cache/tree nodes, callback registration, thread/task/workqueue/timer arguments, and module-level registries.
+4. **Escape points**: inspect assignment into `obj->field`, globals/statics, list/hash/map/queue/cache/tree nodes, callback registration, and module-level registries.
 5. **Error paths**: inspect `goto fail/error/cleanup`, early `return`, partial initialization, and unregister/remove cleanup after an escaped pointer.
 
 ### Mandatory high-risk patterns
 
 - `void *opaque`, `void *ctx`, `void *user_data`, `void *priv`, or `void *cookie` is cast back to a changed object type.
-- Changed object is passed into callback registration, timer, thread, async task, workqueue, or dispatch table.
+- Changed object is passed into callback registration or dispatch table.
 - Changed object is stored into a struct field/global/container and may outlive the current function.
-- A struct gains or changes pointer/refcount/lock/list-node fields without matching destroy/copy/clone/error-cleanup updates.
-- `memcpy`, `memset`, shallow copy, `sizeof`, `offsetof`, or `container_of` touches a struct containing pointers, refcount, lock, or list/hash node fields.
+- A struct gains or changes pointer/refcount/list-node fields without matching destroy/copy/clone/error-cleanup updates.
+- `memcpy`, `memset`, shallow copy, `sizeof`, `offsetof`, or `container_of` touches a struct containing pointers, refcount, or list/hash node fields.
 
 ### Report language rule
 
@@ -459,10 +494,10 @@ Use evidence-backed language. When confidence is low, state why:
 ## Agent Guidance
 
 1. Determine mode first. Default to interactive guided mode unless the user explicitly asks for one-shot/full-auto mode.
-2. Collect user focus first (Step 0) and wait for the user's answer.
-3. Run `--step discover`, summarize scope, then stop and ask whether to continue or adjust subsystem/focus.
+2. For Step 0, do not ask for subsystem, focus symbols, focus risks, or ignore paths by default. Use latest-commit inference and the built-in enabled risk categories.
+3. Run `--step discover`, summarize scope, then stop and ask whether to continue or adjust only if the inferred scope is obviously wrong.
 4. Only after confirmation, run `--step triage`, summarize risk counts and expansion candidates, then stop and ask whether to continue.
-5. Only after confirmation, run `--step expand`, summarize reference evidence and CodeGraph/rg status, then stop and ask whether to continue.
+5. Only after confirmation, run `--step expand`, summarize reference evidence and CodeGraph status, then stop and ask whether to continue.
 6. Only after confirmation, present key evidence for review (Step 4), then stop and ask whether to generate the final report.
 7. Only after confirmation, run `--step report` to generate the final Markdown.
 8. Verify `.impact-scan/risk_report.md` exists. If it does not exist, run one-shot mode as fallback.
@@ -472,16 +507,16 @@ Completion rule:
 
 - Completed: `.impact-scan/risk_report.md` exists and the final reply includes its path.
 - Not completed: only terminal/chat text was produced, or only JSON artifacts were produced.
-- Recovery: run `python ripple/scripts/ripple_scan.py --step report --range HEAD~1..HEAD` from the target repo. If report artifacts are missing, run one-shot mode without `--step`.
+- Recovery: run `python3 ripple/scripts/ripple_scan.py --step report --range HEAD~1..HEAD --codegraph-mode required` from the target repo. If report artifacts are missing, run one-shot mode without `--step`.
 
-If CodeGraph is missing, tell the user and either stop (`--codegraph-mode required`) or continue with lower confidence (`--codegraph-mode prefer`).
+If CodeGraph is missing, tell the user and stop. Do not continue with Grep, ripgrep, `rg`, or Claude Code's Grep tool.
 
 For weak local models, rely on `.impact-scan/risk_items.json` and `.impact-scan/subsystem_analysis.json` more than free-form code reading. The scanner produces structured evidence — use it.
 
-## Windows Intranet Notes
+## Linux Intranet Notes
 
 - Python 3.6+ compatible
-- No dependency on sed/awk/xargs/find/bash
-- `risk_report.md` written as UTF-8 with BOM
-- Subprocess output decoded UTF-8 first with tolerant GBK fallback
-- Prefer `codegraph.exe` on Windows, fall back to `rg.exe`
+- Runs on Linux hosts with `git`, `python3`, and `codegraph` on `PATH`
+- `risk_report.md` written as plain UTF-8
+- Subprocess output decoded as UTF-8
+- Uses `codegraph` on Linux; no Grep/ripgrep fallback is used in the default workflow
