@@ -482,6 +482,45 @@ class CImpactScanTests(unittest.TestCase):
             finally:
                 os.chdir(str(old_cwd))
 
+    def test_discover_clears_previous_scan_artifacts_before_starting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo(tmp)
+            out = repo / ".impact-scan"
+            out.mkdir(parents=True)
+            stale = out / "risk_report.md"
+            stale.write_text("stale report\n", encoding="utf-8")
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                                 "--step", "discover", "--codegraph-mode", "off"])
+
+                self.assertEqual(0, ret)
+                self.assertFalse(stale.exists())
+                self.assertTrue((out / "scope_discovery.json").exists())
+            finally:
+                os.chdir(str(old_cwd))
+
+    def test_later_guided_steps_do_not_clear_previous_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo(tmp)
+            out = repo / ".impact-scan"
+            out.mkdir(parents=True)
+            marker = out / "scope_discovery.json"
+            marker.write_text('{"marker": true}', encoding="utf-8")
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                                 "--step", "triage", "--codegraph-mode", "off"])
+
+                self.assertEqual(0, ret)
+                self.assertTrue(marker.exists())
+            finally:
+                os.chdir(str(old_cwd))
+
     def test_rejects_non_latest_commit_range(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_git_repo(tmp)

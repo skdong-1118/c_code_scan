@@ -1042,6 +1042,19 @@ def write_markdown_report(path, text):
     path.write_text(text, encoding="utf-8")
 
 
+def reset_output_dir(repo, out):
+    repo_root = repo.resolve()
+    out_path = out.resolve()
+    if out_path == repo_root or repo_root not in out_path.parents:
+        raise RuntimeError("refuse to clear unsafe output directory: {}".format(out))
+    if out.exists():
+        if out.is_dir():
+            shutil.rmtree(str(out))
+        else:
+            out.unlink()
+    out.mkdir(parents=True, exist_ok=True)
+
+
 def manual_review_items(risks):
     review = []
     keywords = (
@@ -1573,7 +1586,15 @@ def main(argv=None):
         return 2
 
     out = repo / args.out
-    out.mkdir(parents=True, exist_ok=True)
+    starts_new_analysis = args.step in (None, "discover")
+    if starts_new_analysis:
+        try:
+            reset_output_dir(repo, out)
+        except Exception as exc:
+            print("error: failed to clear previous scan artifacts: {}".format(exc), file=sys.stderr)
+            return 5
+    else:
+        out.mkdir(parents=True, exist_ok=True)
 
     # Resolve focus: --focus file takes precedence, CLI flags override
     focus_source = repo

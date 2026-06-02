@@ -151,6 +151,7 @@ codegraph init -i
 
 - 用户只说“分析最近一次修改对已有功能的影响”时，默认走交互式分步流程。
 - Step 0 不再要求用户选择 subsystem、symbol、风险项或忽略路径；默认从当前分支最后一个 commit 自动推断，并使用内置风险项。
+- 每次新分析开始前会主动清空输出目录里的旧分析结果；`discover` 和 one-shot 会重建 `.impact-scan/`，后续 `triage` / `expand` / `report` 不会清空前一步产物。
 - Step 1 `discover` 完成后，Claude Code 应该展示变更范围摘要，并等待你确认扫描范围。
 - Step 2 `triage` 完成后，Claude Code 应该展示风险数量和 expansion candidates，并等待你确认是否继续。
 - Step 3 `expand` 完成后，Claude Code 应该展示 CodeGraph 命中和 reference evidence，并等待你确认是否生成报告。
@@ -301,6 +302,8 @@ subsys/net/include/
 ```text
 .impact-scan/
 ```
+
+开始新分析时，脚本会先清空并重建输出目录，避免读取上一次分析留下的 JSON 或报告。清理只发生在 `--step discover` 或 one-shot 入口；`triage`、`expand`、`report` 会保留并读取当前分析的前序产物。
 
 主要输出文件：
 
