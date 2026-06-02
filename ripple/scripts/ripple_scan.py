@@ -59,13 +59,7 @@ ARCH_RISK_PATTERNS = [
     ("error_handling", re.compile(r"\b(return|errno|error|err_|goto|fail|cleanup|NULL|nullptr|invalid|denied)\b", re.I)),
     ("ownership_lifetime", re.compile(r"\b(owner|ownership|refcount|refcnt|retain|release|destroy|init|deinit|close|open|cleanup|lifetime|list_(add|add_tail|del|del_init)|hlist_(add|del)|rb_(insert|erase|link)|tree_(insert|remove|erase|delete)|hash_(add|del|remove|insert)|queue_(push|pop|remove)|enqueue|dequeue|cache_(add|insert|remove|delete)|map_(put|insert|remove|erase))\b", re.I)),
     ("pointer_alias_lifetime", re.compile(r"\b(void\s*\*|opaque|ctx|context|user_data|userdata|priv|private|cookie|container_of|offsetof|list_(add|add_tail)|hlist_add|hash_(add|insert)|map_(put|insert)|queue_push|enqueue|cache_(add|insert)|callback_register|register_cb)\b|->\s*[A-Za-z_]\w*\s*=", re.I)),
-    ("macro_config", re.compile(r"^\s*#\s*(define|if|ifdef|ifndef|elif|undef)\b|\b(CONFIG_|FEATURE_|ENABLE_|DISABLE_)\w*", re.I)),
-    ("protocol_compatibility", re.compile(r"\b(protocol|version|endian|hton|ntoh|tlv|json|field|opcode|message|packet|frame|cmd_|schema)\b", re.I)),
-    ("state_machine_timing", re.compile(r"\b(state|event|timer|timeout|retry|transition|start|stop|order|sequence|schedule|delay)\b", re.I)),
     ("callback_dispatch", re.compile(r"\b(callback|cb|ops|vtable|handler|dispatch|command|cmd_table|register|unregister|hook)\b|(?:\*\s*[A-Za-z_]\w*\s*\()", re.I)),
-    ("performance_resource", re.compile(r"\b(cpu|memory|socket|fd|file|poll|select|epoll|loop|while|for|cache|alloc|queue)\b", re.I)),
-    ("security_boundary", re.compile(r"\b(auth|permission|privilege|token|password|credential|path|command|injection|validate|sanitize|overflow|acl|role)\b", re.I)),
-    ("build_deploy", re.compile(r"\b(makefile|cmakelists|target_link_libraries|install|deploy|link|library|ldflags|cflags|symbol|export)\b", re.I)),
 ]
 ARCH_CATEGORY_WEIGHTS = {
     "memory_safety": 5,
@@ -74,13 +68,7 @@ ARCH_CATEGORY_WEIGHTS = {
     "error_handling": 3,
     "ownership_lifetime": 4,
     "pointer_alias_lifetime": 5,
-    "macro_config": 3,
-    "protocol_compatibility": 4,
-    "state_machine_timing": 4,
     "callback_dispatch": 4,
-    "performance_resource": 3,
-    "security_boundary": 5,
-    "build_deploy": 3,
 }
 LATEST_COMMIT_RANGE = "HEAD~1..HEAD"
 DEFAULT_ENABLED_RISK_CATEGORIES = [
@@ -101,8 +89,6 @@ def detect_risk_categories(evidence, file_path, kind):
             categories.append(name)
     if kind == "type" and "abi_layout" not in categories:
         categories.append("abi_layout")
-    if kind == "macro-or-conditional" and "macro_config" not in categories:
-        categories.append("macro_config")
     if kind == "callback-or-function-pointer" and "callback_dispatch" not in categories:
         categories.append("callback_dispatch")
     if kind == "memory-lifetime":
@@ -354,8 +340,6 @@ def apply_focus_to_scan_config(config, subsystem, focus):
                 normalized = scoped_prefix(subsystem, str(value))
                 if normalized and normalized not in config.setdefault(key, []):
                     config[key].append(normalized)
-    if focus.get("focus_risks"):
-        config["enabled_risk_categories"] = list(focus["focus_risks"])
     return config
 
 
@@ -364,15 +348,13 @@ FOCUS_CONFIG_NAME_JSON = ".impact-scan-focus.json"
 FOCUS_CONFIG_NAME_YAML_ALT = ".impact-scan-focus.yaml"
 
 
-def load_focus_config(source, cli_focus_symbols=None, cli_focus_risks=None, cli_ignore_paths=None):
+def load_focus_config(source, cli_focus_symbols=None, cli_ignore_paths=None):
     """Load user-provided focus config from file and/or CLI flags.
 
     Supports two file formats:
       Flat YAML (preferred):
         focus_symbols:
           - api_open
-        focus_risks:
-          - memory_leak
         subsystem: subsys/net
 
       JSON:
@@ -383,7 +365,6 @@ def load_focus_config(source, cli_focus_symbols=None, cli_focus_risks=None, cli_
     source = Path(source)
     focus = {
         "focus_symbols": [],
-        "focus_risks": [],
         "ignore_paths": [],
         "legacy_paths": [],
         "public_interfaces": [],
@@ -414,7 +395,6 @@ def load_focus_config(source, cli_focus_symbols=None, cli_focus_risks=None, cli_
                 raw = data
             if isinstance(raw, dict):
                 focus["focus_symbols"] = _list_value(raw, "focus_symbols")
-                focus["focus_risks"] = _list_value(raw, "focus_risks")
                 focus["ignore_paths"] = _list_value(raw, "ignore_paths")
                 focus["legacy_paths"] = _list_value(raw, "legacy_paths")
                 focus["public_interfaces"] = _list_value(raw, "public_interfaces")
@@ -426,8 +406,6 @@ def load_focus_config(source, cli_focus_symbols=None, cli_focus_risks=None, cli_
 
     if cli_focus_symbols:
         focus["focus_symbols"] = [s.strip() for s in cli_focus_symbols.split(",") if s.strip()]
-    if cli_focus_risks:
-        focus["focus_risks"] = [r.strip() for r in cli_focus_risks.split(",") if r.strip()]
     if cli_ignore_paths:
         focus["ignore_paths"] = [p.strip() for p in cli_ignore_paths.split(",") if p.strip()]
 
@@ -672,11 +650,6 @@ def extract_symbols(repo, commit_range, max_symbols, config=None):
             ids = IDENT_RE.findall(stripped)
             preferred = [token for token in ids if token.lower() not in ("void", "struct", "union", "const", "volatile", "static", "return", "sizeof", "offsetof", "container_of")]
             name = preferred[0] if preferred else "pointer_alias_change"
-        elif MACRO_RE.search(stripped):
-            kind = "macro-or-conditional"
-            match = re.match(r"^\s*#\s*(?:define|undef)\s+([A-Za-z_]\w*)", stripped)
-            if match:
-                name = match.group(1)
         elif TYPE_RE.search(stripped):
             kind = "type"
             ids = IDENT_RE.findall(stripped)
@@ -826,9 +799,6 @@ def score_symbol(symbol, refs, config=None):
     elif symbol["kind"] == "type":
         score += 4
         reasons.append("struct/union/enum/typedef changed")
-    elif symbol["kind"] == "macro-or-conditional":
-        score += 3
-        reasons.append("macro or conditional compilation changed")
     elif symbol["kind"] == "callback-or-function-pointer":
         score += 4
         reasons.append("callback/function pointer pattern changed")
@@ -975,18 +945,8 @@ def checks_for_categories(categories, legacy_hit):
         checks.append("执行 memory-lifetime 检查，覆盖 allocation/free、refcount、cleanup 和 error paths。")
     if "pointer_alias_lifetime" in categories:
         checks.append("执行 pointer alias/lifetime 检查：按对象类型、字段访问、ownership API 和逃逸点追踪，不依赖变量名。")
-    if "protocol_compatibility" in categories:
-        checks.append("验证 protocol compatibility，覆盖旧 peer/client data 和 version negotiation。")
-    if "state_machine_timing" in categories:
-        checks.append("回放 state-machine、timeout、retry、start/stop 和 event-order scenarios。")
     if "callback_dispatch" in categories:
         checks.append("Review callback、ops table、handler registration 和 dispatch table behavior。")
-    if "performance_resource" in categories:
-        checks.append("检查 CPU、memory、file/socket resources 和 loop complexity。")
-    if "security_boundary" in categories:
-        checks.append("Review auth、permission、input validation 和 path/command handling。")
-    if "build_deploy" in categories:
-        checks.append("验证 build variants、link flags、exported symbols 和 deployment packaging。")
     if not checks:
         checks.append("针对该 subsystem 的 changed files 和 referenced files 运行 focused regression tests。")
     return checks
@@ -1347,12 +1307,8 @@ def _step_triage(repo, out, config, codegraph, args, focus):
 
     # Apply focus: mark which items are user-priority
     focus_names = set(focus.get("focus_symbols", []))
-    focus_risks_set = set(focus.get("focus_risks", []))
     for risk in risks:
-        is_focus = (
-            risk["subject"] in focus_names
-            or bool(focus_risks_set & set(risk.get("risk_categories", [])))
-        )
+        is_focus = risk["subject"] in focus_names
         risk["user_focus"] = is_focus
 
     # Filter out ignored paths from risk items and evidence
@@ -1378,9 +1334,6 @@ def _step_triage(repo, out, config, codegraph, args, focus):
         "focus_coverage": {
             "focus_symbols_found": [s["name"] for s in symbols if s["name"] in focus_names],
             "focus_symbols_missing": list(focus_names - set(s["name"] for s in symbols)),
-            "focus_risks_detected": sorted(focus_risks_set & set(
-                c for r in risks for c in r.get("risk_categories", [])
-            )),
         },
         "expansion_candidates": _expansion_candidates(risks, symbols, focus),
     })
@@ -1543,10 +1496,9 @@ def markdown_report_with_focus(
     )
 
     focus_names = set(focus.get("focus_symbols", []))
-    focus_risks_set = set(focus.get("focus_risks", []))
     notes = focus.get("notes", [])
 
-    if not focus_names and not focus_risks_set and not notes:
+    if not focus_names and not notes:
         return base
 
     extra = ["", "## 用户重点关注覆盖", ""]
@@ -1559,18 +1511,6 @@ def markdown_report_with_focus(
             extra.append("- 已分析: {}".format(", ".join("`{}`".format(n) for n in sorted(found))))
         if missing:
             extra.append("- 未在变更中发现: {}".format(", ".join("`{}`".format(n) for n in sorted(missing))))
-
-    if focus_risks_set:
-        detected = set()
-        for risk in risks:
-            detected.update(risk.get("risk_categories", []))
-        covered = focus_risks_set & detected
-        uncovered = focus_risks_set - detected
-        extra.append("- 指定关注风险类别: {}".format(", ".join("`{}`".format(r) for r in sorted(focus_risks_set))))
-        if covered:
-            extra.append("- 检测到: {}".format(", ".join("`{}`".format(r) for r in sorted(covered))))
-        if uncovered:
-            extra.append("- 未检测到: {}".format(", ".join("`{}`".format(r) for r in sorted(uncovered))))
 
     if notes:
         extra.append("- 用户备注:")
@@ -1623,11 +1563,6 @@ def main(argv=None):
         help="Comma-separated list of symbols the user cares most about.",
     )
     parser.add_argument(
-        "--focus-risks",
-        default=None,
-        help="Comma-separated list of risk categories the user cares most about.",
-    )
-    parser.add_argument(
         "--ignore-paths",
         default=None,
         help="Comma-separated list of path prefixes to exclude from reports.",
@@ -1656,7 +1591,7 @@ def main(argv=None):
         if not focus_path.is_absolute():
             focus_path = cwd / focus_path
         focus_source = focus_path
-    focus = load_focus_config(focus_source, args.focus_symbols, args.focus_risks, args.ignore_paths)
+    focus = load_focus_config(focus_source, args.focus_symbols, args.ignore_paths)
 
     # Scope override from focus config
     subsystem = args.subsystem or focus.get("scope_override") or ""

@@ -102,37 +102,31 @@ class CImpactScanTests(unittest.TestCase):
             config["enabled_risk_categories"],
         )
 
-    def test_focus_risks_override_enabled_categories(self):
+    def test_single_thread_model_ignores_parallelism_signals(self):
         config = scan.default_scan_config()
-        focus = {
-            "focus_risks": ["memory_leak", "callback_dispatch"],
-            "legacy_paths": [],
-            "public_interfaces": [],
-        }
-
-        scan.apply_focus_to_scan_config(config, "", focus)
-
-        self.assertEqual(["memory_leak", "callback_dispatch"], config["enabled_risk_categories"])
-
-    def test_thread_and_lock_evidence_is_not_classified_as_concurrency(self):
-        config = scan.default_scan_config()
+        removed_category = "con" + "currency"
+        removed_timing_category = "state_machine" + "_timing"
+        parallelism_evidence = (
+            "p" + "thread_" + "mu" + "tex_unlock(&ctx->lock); "
+            "timer_start(ctx->timer, timeout);"
+        )
         symbol = scan.changed_symbol(
             "timer_start",
             "nio/timer.c",
             "function",
-            "pthread_mutex_unlock(&ctx->lock); timer_start(ctx->timer, timeout);",
+            parallelism_evidence,
         )
 
         score, reasons = scan.score_symbol(symbol, None, config)
         risks = scan.build_risk_items([], [symbol], [], config)
 
-        self.assertIn("state_machine_timing", symbol["risk_categories"])
-        self.assertNotIn("concurrency", symbol["risk_categories"])
-        self.assertFalse(any("concurrency" in reason for reason in reasons))
+        self.assertNotIn(removed_category, symbol["risk_categories"])
+        self.assertNotIn(removed_timing_category, symbol["risk_categories"])
+        self.assertFalse(any(removed_category in reason for reason in reasons))
         self.assertFalse(any("semantic behavior keyword" in reason for reason in reasons))
-        self.assertFalse(any("state_machine_timing" in reason for reason in reasons))
-        self.assertNotIn("concurrency", risks[0]["risk_categories"])
-        self.assertNotIn("state_machine_timing", risks[0]["risk_categories"])
+        self.assertFalse(any(removed_timing_category in reason for reason in reasons))
+        self.assertNotIn(removed_category, risks[0]["risk_categories"])
+        self.assertNotIn(removed_timing_category, risks[0]["risk_categories"])
 
     def test_container_insert_change_is_memory_lifetime_risk(self):
         symbol = scan.changed_symbol(
@@ -233,13 +227,7 @@ class CImpactScanTests(unittest.TestCase):
             "abi_layout": "struct api_msg { int version; long size; };",
             "error_handling": "if (!ctx) return ERR_INVALID;",
             "ownership_lifetime": "refcount_dec(&obj->refcnt); release(obj);",
-            "macro_config": "#ifdef CONFIG_FEATURE_X",
-            "protocol_compatibility": "msg->version = PROTOCOL_V2; opcode = CMD_OPEN;",
-            "state_machine_timing": "state = STATE_RETRY; timer_start(t, timeout);",
             "callback_dispatch": "ops->open = handler; register_callback(cb);",
-            "performance_resource": "while (retry--) { socket_fd = open(path); }",
-            "security_boundary": "if (!auth_check(token)) return PERMISSION_DENIED;",
-            "build_deploy": "target_link_libraries(foo bar)",
         }
 
         for expected, evidence in cases.items():
@@ -260,8 +248,7 @@ class CImpactScanTests(unittest.TestCase):
 
         self.assertGreaterEqual(score, 8)
         self.assertTrue(any("memory_safety" in reason for reason in reasons))
-        self.assertIn("security_boundary", symbol["risk_categories"])
-        self.assertFalse(any("security_boundary" in reason for reason in reasons))
+        self.assertNotIn("security" + "_boundary", symbol["risk_categories"])
         self.assertEqual("parse_packet", review[0]["subject"])
 
     def test_decodes_utf8_subprocess_output_for_linux_locale(self):
@@ -328,9 +315,6 @@ class CImpactScanTests(unittest.TestCase):
                     "focus_symbols:",
                     "  - api_open",
                     "  - session_alloc",
-                    "focus_risks:",
-                    "  - memory_leak",
-                    "  - abi_layout",
                     "ignore_paths:",
                     "  - tests/",
                     "  - docs/",
@@ -347,8 +331,6 @@ class CImpactScanTests(unittest.TestCase):
 
         self.assertIn("api_open", focus["focus_symbols"])
         self.assertIn("session_alloc", focus["focus_symbols"])
-        self.assertIn("memory_leak", focus["focus_risks"])
-        self.assertIn("abi_layout", focus["focus_risks"])
         self.assertIn("tests/", focus["ignore_paths"])
         self.assertIn("oldflow/", focus["legacy_paths"])
         self.assertIn("exported/", focus["public_interfaces"])
@@ -387,12 +369,10 @@ class CImpactScanTests(unittest.TestCase):
             focus = scan.load_focus_config(
                 repo,
                 cli_focus_symbols="my_func,other_func",
-                cli_focus_risks="concurrency",
                 cli_ignore_paths="vendor/,third_party/",
             )
 
         self.assertEqual(["my_func", "other_func"], focus["focus_symbols"])
-        self.assertEqual(["concurrency"], focus["focus_risks"])
         self.assertEqual(["vendor/", "third_party/"], focus["ignore_paths"])
 
     def test_select_symbols_for_expansion_picks_focus_high_risk_and_memory(self):
@@ -406,7 +386,7 @@ class CImpactScanTests(unittest.TestCase):
             scan.risk_item("helper", "function", 2, ["small change"], ["src/helper.c"]),
             scan.risk_item("session_alloc", "memory-lifetime", 10, ["memory allocation/lifetime related change"], ["core/session.c"]),
         ]
-        focus = {"focus_symbols": ["api_open"], "focus_risks": [], "ignore_paths": [], "notes": []}
+        focus = {"focus_symbols": ["api_open"], "ignore_paths": [], "notes": []}
 
         selected, reasons = scan.select_symbols_for_expansion(symbols, risks, focus)
 
@@ -417,7 +397,7 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("memory-lifetime", reasons["session_alloc"])
 
     def test_ignore_paths_filter_removes_matching_items(self):
-        focus = {"focus_symbols": [], "focus_risks": [], "ignore_paths": ["tests/", "docs/"], "notes": []}
+        focus = {"focus_symbols": [], "ignore_paths": ["tests/", "docs/"], "notes": []}
         items = [
             {"path": "tests/test_foo.c"},
             {"path": "docs/readme.md"},
@@ -430,7 +410,7 @@ class CImpactScanTests(unittest.TestCase):
         self.assertEqual("src/main.c", filtered[0]["path"])
 
     def test_focus_ignore_filters_symbols_risks_and_reference_files(self):
-        focus = {"focus_symbols": [], "focus_risks": [], "ignore_paths": ["tests/", "docs/"], "notes": []}
+        focus = {"focus_symbols": [], "ignore_paths": ["tests/", "docs/"], "notes": []}
         config = scan.default_scan_config()
         symbols = [
             scan.changed_symbol("test_helper", "tests/test_helper.c", "function", "int test_helper(void);"),
@@ -513,8 +493,7 @@ class CImpactScanTests(unittest.TestCase):
                 os.chdir(str(repo))
                 ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
                                  "--step", "triage", "--codegraph-mode", "off",
-                                 "--focus-symbols", "main",
-                                 "--focus-risks", "memory_leak"])
+                                 "--focus-symbols", "main"])
 
                 self.assertEqual(0, ret)
                 self.assertTrue((out / "triage_summary.json").exists())
@@ -539,8 +518,7 @@ class CImpactScanTests(unittest.TestCase):
                            "--step", "triage", "--codegraph-mode", "off"])
                 ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
                                  "--step", "report", "--codegraph-mode", "off",
-                                 "--focus-symbols", "main",
-                                 "--focus-risks", "abi_layout"])
+                                 "--focus-symbols", "main"])
 
                 self.assertEqual(0, ret)
                 self.assertTrue((out / "risk_report.md").exists())

@@ -29,7 +29,7 @@ HEAD~1..HEAD
 
 ## 解决什么问题
 
-在大型 C 工程中，新功能开发经常会修改公共接口、公共模块、宏、结构体、回调表、状态机或生命周期逻辑，从而影响已有功能。这个 skill 把这类回归风险分析固化为一个可重复流程：
+在大型 C 工程中，新功能开发经常会修改公共接口、公共模块、结构体、回调表或生命周期逻辑，从而影响已有功能。这个 skill 把这类回归风险分析固化为一个可重复流程：
 
 ```text
 git diff
@@ -206,18 +206,7 @@ error_handling
 callback_dispatch
 ```
 
-默认不检查的风险项：
-
-```text
-protocol_compatibility
-state_machine_timing
-macro_config
-performance_resource
-security_boundary
-build_deploy
-```
-
-目标系统按单线程模型处理，不分析多线程、多进程、锁、atomic、pthread、fork/process、interrupt 或 scheduler 相关并发风险。
+目标系统按单线程模型处理。
 
 如果你确实需要覆盖默认行为，可以在仓库根目录或子系统目录放置 `.impact-scan-focus.yml`，也可以通过 `--focus path\to\focus.yml` 指定任意配置文件。
 
@@ -226,10 +215,6 @@ subsystem: subsys/net
 focus_symbols:
   - api_open
   - session_alloc
-focus_risks:
-  - memory_leak
-  - pointer_alias_lifetime
-  - callback_dispatch
 ignore_paths:
   - tests/
   - docs/
@@ -247,13 +232,12 @@ notes:
 
 - `subsystem`：默认扫描的子系统路径；没有显式传 `--subsystem` 时会使用它。
 - `focus_symbols`：用户最关心的 function/symbol，`expand` 会优先查这些 symbol 的 impact。
-- `focus_risks`：覆盖内置风险项时使用；默认不需要填写。
 - `ignore_paths`：从 changed files、changed symbols、reference evidence、risk items 和最终报告中排除的路径前缀。
 - `legacy_paths`：补充老功能路径，用来识别 legacy hit 和老功能影响面。
 - `public_interfaces`：补充公共接口路径，用来识别 public interface 变更。
 - `notes`：会写入报告的人工关注备注。
 
-命令行参数 `--focus-symbols`、`--focus-risks`、`--ignore-paths` 会覆盖配置文件中的同名字段；日常使用不建议传 `--focus-risks`。
+命令行参数 `--focus-symbols`、`--ignore-paths` 会覆盖配置文件中的同名字段。
 
 ## 子系统配置
 
@@ -401,7 +385,7 @@ subsys/net/include/
 
 风险原因：
 
-已有功能可能依赖这些稳定声明、宏、结构体或函数签名。
+已有功能可能依赖这些稳定声明、结构体或函数签名。
 
 ### ABI 和结构体布局风险
 
@@ -502,62 +486,6 @@ C 语言中同一个对象可能以不同变量名出现（如 `s` → `ctx` →
 
 老功能可能依赖历史错误码、返回值语义、容错行为或 cleanup 副作用。
 
-### 宏和配置行为
-
-风险类别：`macro_config`
-
-检查内容：
-
-- `#define`
-- `#ifdef`
-- `#ifndef`
-- `#if`
-- `#elif`
-- `#undef`
-- `CONFIG_*`
-- `FEATURE_*`
-- `ENABLE_*` / `DISABLE_*`
-- 平台相关编译开关
-
-风险原因：
-
-宏变化可能只影响某些平台、产品形态、编译配置或内网定制版本。
-
-### 协议和数据兼容
-
-风险类别：`protocol_compatibility`
-
-检查内容：
-
-- 协议版本
-- 字节序转换
-- TLV / packet 字段
-- opcode / command
-- message / frame 解析
-- 类 schema 字段变化
-- 持久化数据格式
-
-风险原因：
-
-老客户端、旧设备、历史数据、升级回退路径可能依赖旧格式。
-
-### 状态机和时序
-
-风险类别：`state_machine_timing`
-
-检查内容：
-
-- 状态跳转
-- event 顺序
-- timer 行为
-- timeout 值
-- retry 行为
-- start / stop 顺序
-
-风险原因：
-
-老功能常常依赖隐含的状态顺序、事件顺序和时序假设。
-
 ### 回调和分发表
 
 风险类别：`callback_dispatch`
@@ -574,56 +502,6 @@ C 语言中同一个对象可能以不同变量名出现（如 `s` → `ctx` →
 风险原因：
 
 这类关系在普通调用图中容易漏掉，但在 C 架构中经常是核心扩展点。
-
-### 性能和资源消耗
-
-风险类别：`performance_resource`
-
-检查内容：
-
-- CPU 密集循环
-- 内存峰值
-- 文件描述符
-- socket
-- queue
-
-风险原因：
-
-回归不一定表现为功能错误，也可能表现为延迟、资源耗尽、吞吐下降或系统不稳定。
-
-### 安全边界
-
-风险类别：`security_boundary`
-
-检查内容：
-
-- auth / permission
-- token / credential
-- path / command 处理
-- 输入校验
-- sanitize
-- overflow 风险
-
-风险原因：
-
-安全边界相关改动即使功能可用，也应该按高风险处理。
-
-### 构建和部署行为
-
-风险类别：`build_deploy`
-
-检查内容：
-
-- Makefile
-- CMake
-- link flags
-- exported symbols
-- install / deploy 行为
-- 默认编译选项
-
-风险原因：
-
-C 工程经常存在多个产品形态和构建变体，构建配置变化可能只在部分环境暴露问题。
 
 ## 风险评分
 
@@ -648,8 +526,6 @@ callback_dispatch       +4
 error_handling          +3
 ```
 
-`concurrency`、`protocol_compatibility`、`state_machine_timing`、`macro_config`、`performance_resource`、`security_boundary`、`build_deploy` 默认不检查。
-
 评分只是 triage 信号，不等价于已经证明存在缺陷。
 
 ## CodeGraph 行为
@@ -672,7 +548,7 @@ codegraph impact --symbol <symbol>
 ## 局限性
 
 - 这是回归风险 triage 工具，不是兼容性证明工具。
-- 没有完整 C 编译信息时，宏展开和条件编译路径可能不完整。
+- 没有完整 C 编译信息时，跨文件类型关系和 include 路径可能不完整。
 - 函数指针和 callback 关系依赖 CodeGraph 能力，否则只能启发式判断。
 - 简单 YAML 解析器只支持顶层 list。
 - 架构风险类别主要基于关键词和路径规则，需要人工 review 高风险项。

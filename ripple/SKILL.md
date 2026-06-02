@@ -111,18 +111,7 @@ error_handling
 callback_dispatch
 ```
 
-Do not check these categories by default:
-
-```text
-protocol_compatibility
-state_machine_timing
-macro_config
-performance_resource
-security_boundary
-build_deploy
-```
-
-The target systems are single-threaded. Do not analyze multi-threading, multi-process concurrency, lock/unlock, mutex, atomic, pthread, fork/process, interrupt, or scheduler interactions.
+The target systems are single-threaded. Treat execution as single-threaded and do not create a separate execution-model review section.
 
 Only ask the user for Step 0 input if project-specific background is necessary and cannot be inferred from the latest commit.
 
@@ -135,10 +124,6 @@ subsystem: subsys/net
 focus_symbols:
   - api_open
   - session_alloc
-focus_risks:
-  - memory_leak
-  - abi_layout
-  - callback_dispatch
 ignore_paths:
   - tests/
   - docs/
@@ -156,7 +141,6 @@ notes:
 
 ```
 --focus-symbols api_open,session_alloc
---focus-risks memory_leak,abi_layout
 --ignore-paths tests/,docs/
 ```
 
@@ -286,10 +270,6 @@ subsystem: subsys/net
 focus_symbols:
   - api_open
   - session_alloc
-focus_risks:
-  - memory_leak
-  - pointer_alias_lifetime
-  - abi_layout
 ignore_paths:
   - tests/
   - docs/
@@ -306,7 +286,6 @@ notes:
 | Flag | Example |
 |------|---------|
 | `--focus-symbols` | `api_open,session_alloc` |
-| `--focus-risks` | `memory_leak,abi_layout` |
 | `--ignore-paths` | `tests/,docs/` |
 | `--focus` | path to `.impact-scan-focus.yml` |
 
@@ -422,13 +401,7 @@ For risks that static tools cannot resolve — pointer aliasing, ownership trans
 | `error_handling` | return value, error code, goto error, NULL check, cleanup path |
 | `ownership_lifetime` | ownership transfer, init/destroy order, retain/release, container insert/remove |
 | `pointer_alias_lifetime` | same object under different pointer names, void* opaque/user_data/ctx, field/global/container escape, callback registration lifetime |
-| `macro_config` | macro default, feature flag, platform conditional, build-time behavior |
-| `protocol_compatibility` | wire format, version, endian, opcode, field meaning, persistent data |
-| `state_machine_timing` | state transition, event order, timer, timeout, retry, start/stop |
 | `callback_dispatch` | function pointer table, ops table, handler registration, dispatch |
-| `performance_resource` | CPU, memory peak, file/socket resources, loop complexity |
-| `security_boundary` | auth, permission, input validation, path/command injection, overflow |
-| `build_deploy` | Makefile/CMake, link flags, exported symbols, install/deploy behavior |
 
 ## Memory Leak Focus
 
