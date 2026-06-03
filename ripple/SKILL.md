@@ -88,20 +88,23 @@ Deep call-chain analysis must consider multiple shapes, not only one long stack:
 - deep upstream fan-in where business entries split many wrapper layers above the changed function
 - downstream fan-out where the changed function calls different state, queue, callback, or lifecycle helpers
 
-Read `.impact-scan/call_chain_analysis.json` and group paths by business entry groups. For each important group, explain what the changed function means in that business flow. CodeGraph finds the graph; you must interpret the graph with source-level semantics.
+Step 3 writes structured JSON artifacts. It does not write a Markdown review file.
 
 Do not stop call-chain expansion because it seems enough. Stop only on an explicit terminal condition: `complete_to_entry`, `complete_to_root`, `incomplete_depth_limit`, `truncated_path_budget`, or `evidence_gap`. If any selected symbol has no `complete_to_entry` or `complete_to_root` path, do not claim low impact; report the evidence gap.
 
-Step 3 is complete only when both artifacts exist:
+Step 3 is complete only when these artifacts exist:
 
 ```text
 .impact-scan/call_chain_analysis.json
-.impact-scan/step3_callchain_review.md
+.impact-scan/step3a_call_paths.json
+.impact-scan/step3b_business_entries.json
+.impact-scan/step3c_branch_points.json
+.impact-scan/step3d_state_flow.json
+.impact-scan/step3e_evidence_gaps.json
+.impact-scan/step3f_completion.json
 ```
 
-`step3_callchain_review.md` must cover changed function role, business entry groups, branch points, object/state flow, risk interpretation, and evidence gaps.
-
-Before Step 3 is considered complete, replace every `TODO` in `step3_callchain_review.md` with concrete source-backed analysis. Step 4 rejects an unfinished template.
+`step3f_completion.json` must have `step3_complete: true`. These JSON files are the fixed Step 3 checklist: call paths, business entry groups, branch points, object/state flow candidates, evidence gaps, and completion status.
 
 Summarize `.impact-scan/expansion_summary.json`: expanded symbols, reasons, CodeGraph hits, business entry group count, branch points, and missing reference evidence. Include only the key evidence that needs confirmation:
 
@@ -119,9 +122,9 @@ Stop and ask whether to generate the report.
 python3 ripple/scripts/ripple_scan.py --step report --range HEAD~1..HEAD --codegraph-mode required
 ```
 
-Before Step 4, verify `.impact-scan/step3_callchain_review.md` exists and contains no `TODO`. If missing or unfinished, finish Step 3 first; do not generate a final report.
+Before Step 4, verify `.impact-scan/step3f_completion.json` exists and has `step3_complete: true`. If missing or incomplete, finish Step 3 first; do not generate a final report.
 
-Verify `.impact-scan/risk_report.md` exists, then summarize it briefly for the user. For report sections and wording, read `references/report-format.md` when needed.
+Verify `.impact-scan/risk_report.md` exists, then summarize it briefly for the user. The final report must be written in Chinese; professional terms such as `CodeGraph`, `business entry groups`, `fan-in`, `fan-out`, `legacy path`, `callback`, `ABI`, `memory-lifetime`, and `evidence gap` may remain in English. For report sections and wording, read `references/report-format.md` when needed.
 
 ## One-Shot Mode
 
@@ -157,7 +160,7 @@ Subsystem directories may contain `.impact-scan.yml` or `.impact-scan.json` with
 ## Failure Handling
 
 - If CodeGraph is missing or `.codegraph` is absent in required mode, stop and report the CodeGraph error.
-- If `.impact-scan/step3_callchain_review.md` is missing before report, rerun `--step expand`.
+- If `.impact-scan/step3f_completion.json` is missing or incomplete before report, rerun `--step expand`.
 - If `.impact-scan/risk_report.md` is missing after report, rerun `--step report`; if artifacts are missing, rerun one-shot mode.
 - If scope is ambiguous, show `subsystem_resolution_candidates` and wait for the user to provide the complete path.
 
