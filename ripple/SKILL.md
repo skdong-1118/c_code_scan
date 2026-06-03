@@ -23,6 +23,12 @@ The final deliverable is always:
 
 Terminal or chat summaries are not completion.
 
+The guided workflow state is:
+
+```text
+.impact-scan/workflow_state.json
+```
+
 ## Core Rules
 
 - Require `codegraph` with `--codegraph-mode required`; do not use Grep, ripgrep, `rg`, or Claude Code's Grep tool for reference search.
@@ -30,6 +36,8 @@ Terminal or chat summaries are not completion.
 - Do not ask for subsystem, focus symbols, risk categories, or ignore paths by default. Infer scope from latest-commit git changed files.
 - Starting a new analysis clears previous scan artifacts at `discover` or one-shot start. Do not clear artifacts before `triage`, `expand`, or `report`.
 - Target systems are single-threaded. Do not add a separate threading, multiprocess, or execution-model review section.
+- Before every step, check `.impact-scan/workflow_state.json` when it exists. Follow `next_required_step`; do not skip ahead.
+- A step is complete only when its required artifact exists. Chat summaries are not step completion.
 
 ## Interactive Guided Mode
 
@@ -82,6 +90,19 @@ Deep call-chain analysis must consider multiple shapes, not only one long stack:
 
 Read `.impact-scan/call_chain_analysis.json` and group paths by business entry groups. For each important group, explain what the changed function means in that business flow. CodeGraph finds the graph; you must interpret the graph with source-level semantics.
 
+Do not stop call-chain expansion because it seems enough. Stop only on an explicit terminal condition: `complete_to_entry`, `complete_to_root`, `incomplete_depth_limit`, `truncated_path_budget`, or `evidence_gap`. If any selected symbol has no `complete_to_entry` or `complete_to_root` path, do not claim low impact; report the evidence gap.
+
+Step 3 is complete only when both artifacts exist:
+
+```text
+.impact-scan/call_chain_analysis.json
+.impact-scan/step3_callchain_review.md
+```
+
+`step3_callchain_review.md` must cover changed function role, business entry groups, branch points, object/state flow, risk interpretation, and evidence gaps.
+
+Before Step 3 is considered complete, replace every `TODO` in `step3_callchain_review.md` with concrete source-backed analysis. Step 4 rejects an unfinished template.
+
 Summarize `.impact-scan/expansion_summary.json`: expanded symbols, reasons, CodeGraph hits, business entry group count, branch points, and missing reference evidence. Include only the key evidence that needs confirmation:
 
 - inferred subsystem and ambiguous candidates, if any
@@ -97,6 +118,8 @@ Stop and ask whether to generate the report.
 ```bash
 python3 ripple/scripts/ripple_scan.py --step report --range HEAD~1..HEAD --codegraph-mode required
 ```
+
+Before Step 4, verify `.impact-scan/step3_callchain_review.md` exists and contains no `TODO`. If missing or unfinished, finish Step 3 first; do not generate a final report.
 
 Verify `.impact-scan/risk_report.md` exists, then summarize it briefly for the user. For report sections and wording, read `references/report-format.md` when needed.
 
@@ -134,6 +157,7 @@ Subsystem directories may contain `.impact-scan.yml` or `.impact-scan.json` with
 ## Failure Handling
 
 - If CodeGraph is missing or `.codegraph` is absent in required mode, stop and report the CodeGraph error.
+- If `.impact-scan/step3_callchain_review.md` is missing before report, rerun `--step expand`.
 - If `.impact-scan/risk_report.md` is missing after report, rerun `--step report`; if artifacts are missing, rerun one-shot mode.
 - If scope is ambiguous, show `subsystem_resolution_candidates` and wait for the user to provide the complete path.
 

@@ -321,6 +321,9 @@ class CImpactScanTests(unittest.TestCase):
         item = analysis["symbols"][0]
         self.assertEqual("common_flow", item["symbol"])
         self.assertEqual(15, item["max_depth"])
+        statuses = [group["termination_status"] for group in item["business_entry_groups"]]
+        self.assertTrue(all(status in scan.CALL_CHAIN_TERMINATION_STATUSES for status in statuses))
+        self.assertIn("complete_to_entry", statuses)
         self.assertIn("local-control-flow", [point["kind"] for point in item["branch_points"]])
         self.assertIn("upstream-fan-in", [point["kind"] for point in item["branch_points"]])
         self.assertIn("downstream-fan-out", [point["kind"] for point in item["branch_points"]])
@@ -938,11 +941,59 @@ class CImpactScanTests(unittest.TestCase):
 
                 self.assertEqual(0, ret)
                 self.assertTrue((out / "call_chain_analysis.json").exists())
+                self.assertTrue((out / "step3_callchain_review.md").exists())
+                self.assertTrue((out / "workflow_state.json").exists())
                 analysis = json.loads((out / "call_chain_analysis.json").read_text(encoding="utf-8"))
                 summary = json.loads((out / "expansion_summary.json").read_text(encoding="utf-8"))
+                review = (out / "step3_callchain_review.md").read_text(encoding="utf-8")
+                state = json.loads((out / "workflow_state.json").read_text(encoding="utf-8"))
                 self.assertEqual("deep-call-chain", analysis["mode"])
                 self.assertIn("business_entry_group_count", summary)
                 self.assertIn("branch_point_count", summary)
+                self.assertIn("Business Entry Groups", review)
+                self.assertEqual("report", state["next_required_step"])
+            finally:
+                os.chdir(str(old_cwd))
+
+    def test_step_report_requires_step3_callchain_review_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo_with_local_variable_change(tmp)
+            out = repo / ".impact-scan"
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                           "--step", "discover", "--codegraph-mode", "off"])
+                scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                           "--step", "triage", "--codegraph-mode", "off"])
+                ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                                 "--step", "report", "--codegraph-mode", "off"])
+
+                self.assertEqual(5, ret)
+                self.assertFalse((out / "risk_report.md").exists())
+            finally:
+                os.chdir(str(old_cwd))
+
+    def test_step_report_rejects_unfinished_step3_review_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo_with_local_variable_change(tmp)
+            out = repo / ".impact-scan"
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                           "--step", "discover", "--codegraph-mode", "off"])
+                scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                           "--step", "triage", "--codegraph-mode", "off"])
+                scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                           "--step", "expand", "--codegraph-mode", "off"])
+                ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                                 "--step", "report", "--codegraph-mode", "off"])
+
+                self.assertEqual(5, ret)
+                self.assertFalse((out / "risk_report.md").exists())
             finally:
                 os.chdir(str(old_cwd))
 
@@ -960,6 +1011,16 @@ class CImpactScanTests(unittest.TestCase):
                            "--step", "discover", "--codegraph-mode", "off"])
                 scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
                            "--step", "triage", "--codegraph-mode", "off"])
+                scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                           "--step", "expand", "--codegraph-mode", "off"])
+                review = out / "step3_callchain_review.md"
+                review.write_text(
+                    review.read_text(encoding="utf-8").replace(
+                        "TODO",
+                        "reviewed with source-level business context",
+                    ),
+                    encoding="utf-8",
+                )
                 ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
                                  "--step", "report", "--codegraph-mode", "off",
                                  "--focus-symbols", "main"])
@@ -1004,6 +1065,9 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("Deep call-chain analysis", skill_text)
         self.assertIn("business entry groups", skill_text)
         self.assertIn("branch points", skill_text)
+        self.assertIn("step3_callchain_review.md", skill_text)
+        self.assertIn("workflow_state.json", skill_text)
+        self.assertIn("explicit terminal condition", skill_text)
         self.assertIn("references/risk-rules.md", skill_text)
         self.assertIn("references/report-format.md", skill_text)
         self.assertLess(len(skill_text.splitlines()), 260)

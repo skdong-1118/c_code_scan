@@ -32,6 +32,10 @@ Use these layer meanings:
 - Heuristic 层: deterministic risk signals from functions, paths, diff content, categories, object types, fields, ownership APIs, and escape points.
 - 生命周期证据层: heap allocation, container insert/remove, callback opaque, struct field escape, and error cleanup evidence.
 
+Step 4 must reference `.impact-scan/step3_callchain_review.md`. If it is missing or still contains `TODO`, the final report is premature.
+
+Call-chain paths must keep their terminal status: `complete_to_entry`, `complete_to_root`, `incomplete_depth_limit`, `truncated_path_budget`, or `evidence_gap`. Unresolved paths are evidence gaps, not proof of low impact.
+
 ## Confidence
 
 Confidence is high when CodeGraph produced reference evidence. Confidence is low when only deterministic heuristics are available.

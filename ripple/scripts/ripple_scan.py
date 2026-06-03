@@ -1163,6 +1163,13 @@ def build_impact_paths(refs, config):
 ENTRY_RE = re.compile(r"(api|handler|dispatch|entry|callback|cb|cmd|command|north|nb|legacy|main)", re.I)
 WRAPPER_RE = re.compile(r"(wrap|adapter|prepare|common|helper|util|inner|do_)", re.I)
 LOCAL_BRANCH_RE = re.compile(r"\b(if|switch|case|else|goto|return|error|fail|state|type|mode|cmd|event)\b|\?|&&|\|\|", re.I)
+CALL_CHAIN_TERMINATION_STATUSES = set([
+    "complete_to_entry",
+    "complete_to_root",
+    "incomplete_depth_limit",
+    "truncated_path_budget",
+    "evidence_gap",
+])
 
 
 def codegraph_depth_for_symbol(symbol, risk, default_depth):
@@ -1236,6 +1243,18 @@ def path_has_legacy_file(ref):
     return bool(ref and ref.get("legacy_file_count", 0))
 
 
+def call_chain_termination_status(path, entry, symbol, max_depth, path_count=0, path_limit=50):
+    if path_count >= path_limit:
+        return "truncated_path_budget"
+    if path and len(path) - 1 >= max_depth and not ENTRY_RE.search(entry or ""):
+        return "incomplete_depth_limit"
+    if entry and entry != symbol and ENTRY_RE.search(entry):
+        return "complete_to_entry"
+    if path:
+        return "complete_to_root"
+    return "evidence_gap"
+
+
 def build_call_chain_analysis(symbols, refs, config, raw_graph=None, max_depth=12):
     raw_graph = raw_graph or {}
     refs_by_symbol = {ref["symbol"]: ref for ref in refs}
@@ -1277,22 +1296,26 @@ def build_call_chain_analysis(symbols, refs, config, raw_graph=None, max_depth=1
         if paths:
             for path in paths[:50]:
                 entry = entry_from_path(path, name)
+                status = call_chain_termination_status(path, entry, name, max_depth, len(paths), 50)
                 groups.append({
                     "entry": entry,
                     "path": path,
                     "depth": max(0, len(path) - 1),
                     "subsystem": configured_subsystem_for(ref["files"][0], config) if ref and ref.get("files") else "",
                     "legacy_hit": path_has_legacy_file(ref) or bool(ENTRY_RE.search(entry) and "legacy" in entry.lower()),
+                    "termination_status": status,
                     "needs_source_review": True,
                 })
         elif ref:
             for file_path in ref.get("files", [])[:50]:
+                entry = configured_subsystem_for(file_path, config)
                 groups.append({
-                    "entry": configured_subsystem_for(file_path, config),
-                    "path": [configured_subsystem_for(file_path, config), name],
+                    "entry": entry,
+                    "path": [entry, name],
                     "depth": 1,
-                    "subsystem": configured_subsystem_for(file_path, config),
+                    "subsystem": entry,
                     "legacy_hit": path_matches_prefix(file_path, config["legacy_paths"]),
+                    "termination_status": "evidence_gap",
                     "needs_source_review": True,
                 })
 
@@ -1440,6 +1463,104 @@ def write_json(path, data):
 
 def write_markdown_report(path, text):
     path.write_text(text, encoding="utf-8")
+
+
+def write_workflow_state(out, completed_steps, next_required_step):
+    write_json(out / "workflow_state.json", {
+        "completed_steps": completed_steps,
+        "next_required_step": next_required_step,
+    })
+
+
+def required_artifacts_exist(out, artifacts):
+    missing = []
+    for name in artifacts:
+        if not (out / name).exists():
+            missing.append(name)
+    return missing
+
+
+def step3_review_is_complete(path):
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return "TODO" not in text and "Evidence Gaps" in text and "Business Entry Groups" in text
+
+
+def step3_callchain_review_markdown(call_chain_analysis):
+    lines = [
+        "# Step 3 Call-Chain Review",
+        "",
+        "Step 3 is not complete when CodeGraph finishes. It is complete only after business entry groups, branch points, object/state flow, and evidence gaps are reviewed.",
+        "",
+    ]
+    for item in call_chain_analysis.get("symbols", []):
+        lines.extend([
+            "## Symbol: `{}`".format(item["symbol"]),
+            "",
+            "### Changed Function Role",
+            "- TODO: explain what this function does in each business flow, using source-level evidence.",
+            "",
+            "### Business Entry Groups",
+            "",
+            "| Entry | Path | Depth | Termination | Legacy/Public | Why Relevant |",
+            "|---|---|---:|---|---|---|",
+        ])
+        groups = item.get("business_entry_groups", [])
+        if groups:
+            for group in groups[:20]:
+                path = " -> ".join("`{}`".format(node) for node in group.get("path", [])[:12])
+                legacy = "legacy" if group.get("legacy_hit") else "non-legacy"
+                lines.append(
+                    "| `{}` | {} | {} | `{}` | {} | TODO |".format(
+                        group.get("entry", ""),
+                        path or "-",
+                        group.get("depth", 0),
+                        group.get("termination_status", "evidence_gap"),
+                        legacy,
+                    )
+                )
+        else:
+            lines.append("| - | - | 0 | `evidence_gap` | - | CodeGraph did not return caller paths |")
+        lines.extend([
+            "",
+            "### Branch Points",
+            "",
+            "| Kind | Node | Reason | Source Evidence |",
+            "|---|---|---|---|",
+        ])
+        points = item.get("branch_points", [])
+        if points:
+            for point in points[:20]:
+                lines.append(
+                    "| `{}` | `{}` | {} | TODO |".format(
+                        point.get("kind", ""),
+                        point.get("node", ""),
+                        point.get("reason", ""),
+                    )
+                )
+        else:
+            lines.append("| - | - | No branch point detected by deterministic scan | TODO |")
+        lines.extend([
+            "",
+            "### Object / State Flow",
+            "- TODO: describe input object/state origin, mutation, escape, release, return value, error code, and side effects.",
+            "",
+            "### Risk Interpretation",
+            "- TODO: explain which business paths are likely affected and which are evidence gaps.",
+            "",
+            "### Evidence Gaps",
+            "- Any path with `incomplete_depth_limit`, `truncated_path_budget`, or `evidence_gap` must be listed here before Step 4.",
+            "",
+        ])
+    if not call_chain_analysis.get("symbols"):
+        lines.extend([
+            "## Symbol: none",
+            "",
+            "- No selected symbol had call-chain evidence. Treat this as an evidence gap, not proof of no impact.",
+            "",
+        ])
+    return "\n".join(lines)
 
 
 def reset_output_dir(repo, out):
@@ -1600,7 +1721,15 @@ def markdown_report(
                 for group in item["business_entry_groups"][:8]:
                     legacy = "legacy" if group.get("legacy_hit") else "non-legacy"
                     path = " -> ".join("`{}`".format(node) for node in group.get("path", [])[:12])
-                    lines.append("  - `{}` (depth {}, {}): {}".format(group["entry"], group.get("depth", 0), legacy, path))
+                    lines.append(
+                        "  - `{}` (depth {}, {}, `{}`): {}".format(
+                            group["entry"],
+                            group.get("depth", 0),
+                            legacy,
+                            group.get("termination_status", "evidence_gap"),
+                            path,
+                        )
+                    )
             lines.append("- Source-level review questions:")
             for question in item.get("analysis_questions", [])[:4]:
                 lines.append("  - {}".format(question))
@@ -1707,6 +1836,7 @@ def _step_discover(repo, out, config, codegraph, args, focus):
         "public_interface_files": [item["path"] for item in files if item.get("is_public_interface")],
         "build_files": [item["path"] for item in files if item["is_build_file"]],
     })
+    write_workflow_state(out, ["discover"], "triage")
 
     print("Scope discovery complete.")
     print("  Changed files: {}".format(len(files)))
@@ -1758,6 +1888,7 @@ def _step_triage(repo, out, config, codegraph, args, focus):
         },
         "expansion_candidates": _expansion_candidates(risks, symbols, focus),
     })
+    write_workflow_state(out, ["discover", "triage"], "expand")
 
     print("Triage complete.")
     print("  Risk items: {} (high={}, medium={}, low={})".format(
@@ -1830,6 +1961,7 @@ def _step_expand(repo, out, config, codegraph, args, focus):
     write_json(out / "references.json", refs)
     write_json(out / "impact_paths.json", impact_paths)
     write_json(out / "call_chain_analysis.json", call_chain_analysis)
+    write_markdown_report(out / "step3_callchain_review.md", step3_callchain_review_markdown(call_chain_analysis))
     write_json(out / "risk_items.json", risks)
     write_json(out / "expansion_summary.json", {
         "total_symbols": len(symbols),
@@ -1849,6 +1981,7 @@ def _step_expand(repo, out, config, codegraph, args, focus):
             len(item["branch_points"]) for item in call_chain_analysis["symbols"]
         ),
     })
+    write_workflow_state(out, ["discover", "triage", "expand"], "report")
 
     print("Expansion complete.")
     print("  Expanded {} / {} symbols".format(len(selected), len(symbols)))
@@ -1859,6 +1992,28 @@ def _step_expand(repo, out, config, codegraph, args, focus):
 
 def _step_report(repo, out, config, codegraph, args, focus):
     """Generate final Chinese Markdown report from all collected artifacts."""
+    missing = required_artifacts_exist(out, [
+        "scope_discovery.json",
+        "triage_summary.json",
+        "expansion_summary.json",
+        "call_chain_analysis.json",
+        "step3_callchain_review.md",
+    ])
+    if missing:
+        print(
+            "error: Step 4 requires Step 3 call-chain review artifacts. Missing: {}".format(
+                ", ".join(missing)
+            ),
+            file=sys.stderr,
+        )
+        return 5
+    if not step3_review_is_complete(out / "step3_callchain_review.md"):
+        print(
+            "error: Step 4 requires completed Step 3 business review. Fill step3_callchain_review.md and remove TODO markers.",
+            file=sys.stderr,
+        )
+        return 5
+
     files = _load_json_artifact(out, "diff_summary.json", [])
     symbols = _load_json_artifact(out, "changed_symbols.json", [])
     refs = _load_json_artifact(out, "references.json", [])
@@ -1908,6 +2063,7 @@ def _step_report(repo, out, config, codegraph, args, focus):
     write_json(out / "subsystem_impact.json", subsystems)
     write_json(out / "subsystem_analysis.json", subsystem_analysis)
     write_markdown_report(out / "risk_report.md", report_text)
+    write_workflow_state(out, ["discover", "triage", "expand", "report"], "complete")
 
     print("Report complete.")
     top_level = risks[0]["level"] if risks else "low"
@@ -2098,6 +2254,7 @@ def main(argv=None):
     write_json(out / "subsystem_impact.json", subsystems)
     write_json(out / "subsystem_analysis.json", subsystem_analysis)
     write_json(out / "call_chain_analysis.json", call_chain_analysis)
+    write_markdown_report(out / "step3_callchain_review.md", step3_callchain_review_markdown(call_chain_analysis))
     write_markdown_report(
         out / "risk_report.md",
         markdown_report_with_focus(
@@ -2106,6 +2263,7 @@ def main(argv=None):
             subsystem_analysis, focus, call_chain_analysis,
         ),
     )
+    write_workflow_state(out, ["discover", "triage", "expand", "report"], "complete")
 
     print("wrote {}".format(out / "risk_report.md"))
     return 0
