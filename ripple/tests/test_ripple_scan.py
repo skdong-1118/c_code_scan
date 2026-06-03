@@ -847,9 +847,18 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("Interactive Guided", skill_text)
         self.assertIn("stop and wait", skill_text)
         self.assertIn("Do not run Step 1 through Step 5 in one uninterrupted sequence", skill_text)
+        self.assertIn("references/risk-rules.md", skill_text)
+        self.assertIn("references/report-format.md", skill_text)
+        self.assertLess(len(skill_text.splitlines()), 260)
         self.assertIn("display_name: Ripple", agent_text)
         self.assertIn("interactive guided", agent_text)
         self.assertIn("wait for confirmation", agent_text)
+        self.assertNotIn("Ask for " + "focus first", agent_text)
+        self.assertIn("infer scope from git changed files", agent_text)
+
+    def test_skill_reference_files_exist(self):
+        self.assertTrue((SKILL_ROOT / "references" / "risk-rules.md").exists())
+        self.assertTrue((SKILL_ROOT / "references" / "report-format.md").exists())
 
     def test_removed_risk_categories_do_not_remain_in_skill_or_script(self):
         skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
