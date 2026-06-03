@@ -52,6 +52,8 @@ POINTER_ALIAS_RE = re.compile(
 FIELD_ACCESS_RE = re.compile(r"(->|\.)\s*[A-Za-z_]\w*\b|\boffsetof\s*\(|\bcontainer_of\s*\(|\bsizeof\s*\(", re.I)
 SEMANTIC_RE = re.compile(r"\b(return|NULL|nullptr|errno|error|goto|len|length|size|owner)\b", re.I)
 CONTROL_KEYWORDS = set(["if", "for", "while", "switch", "return", "sizeof", "case", "else", "do"])
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+VISIBLE_ANSI_FRAGMENT_RE = re.compile(r"^(?:\[[0-9;?]*m|[0-9;?]*m)+")
 ARCH_RISK_PATTERNS = [
     ("memory_safety", re.compile(r"\b(memcpy|memmove|memset|strcpy|strncpy|strcat|sprintf|snprintf|overflow|underflow|bounds?|index|len|length|size)\b", re.I)),
     ("memory_leak", re.compile(r"\b(malloc|calloc|realloc|strdup|free|release|destroy|cleanup|refcount|refcnt|retain|alloc|dealloc|list_(add|add_tail|del|del_init)|hlist_(add|del)|rb_(insert|erase|link)|tree_(insert|remove|erase|delete)|hash_(add|del|remove|insert)|queue_(push|pop|remove)|enqueue|dequeue|cache_(add|insert|remove|delete)|map_(put|insert|remove|erase))\b", re.I)),
@@ -567,7 +569,7 @@ def run(args, cwd, check=True):
 
 
 def git(args, cwd):
-    result = run(["git"] + args, cwd)
+    result = run(["git", "--no-pager", "-c", "color.ui=false", "-c", "color.diff=false"] + args, cwd)
     return result.stdout
 
 
@@ -577,6 +579,8 @@ def ensure_git_repo(cwd):
 
 
 def normalize(path):
+    path = ANSI_ESCAPE_RE.sub("", str(path))
+    path = VISIBLE_ANSI_FRAGMENT_RE.sub("", path)
     return path.replace("\\", "/")
 
 

@@ -128,6 +128,21 @@ class CImpactScanTests(unittest.TestCase):
         self.assertNotIn(removed_category, risks[0]["risk_categories"])
         self.assertNotIn(removed_timing_category, risks[0]["risk_categories"])
 
+    def test_normalize_strips_ansi_color_codes_from_paths(self):
+        self.assertEqual(
+            "fosip/nbm/xpath1.c",
+            scan.normalize("\x1b[36mfosip\\nbm\\xpath1.c\x1b[0m"),
+        )
+
+    def test_normalize_strips_visible_ansi_fragments_from_paths(self):
+        self.assertEqual("fosip/nbm", scan.normalize("36mfosip/nbm"))
+        self.assertEqual("xpath1.c", scan.normalize("0mxpath1.c"))
+
+    def test_subsystem_inference_ignores_ansi_fragments(self):
+        item = scan.changed_file("36mfosip/nbm/xpath1.c", "M")
+
+        self.assertEqual("fosip/nbm", scan.subsystem_for(item["path"]))
+
     def test_container_insert_change_is_memory_lifetime_risk(self):
         symbol = scan.changed_symbol(
             "list_add_tail",
