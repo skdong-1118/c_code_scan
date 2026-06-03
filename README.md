@@ -170,10 +170,11 @@ python3 .claude/skills/ripple/scripts/ripple_scan.py --step report --range HEAD~
 
 - `scope_discovery.json`：变更范围、C/header 文件、推断 subsystem。
 - `triage_summary.json`：快速风险分级、用户关注项覆盖情况、建议展开的 symbol。
-- `expansion_summary.json`：实际展开的 symbol、CodeGraph 命中情况。
+- `expansion_summary.json`：实际展开的 symbol、CodeGraph 命中情况、业务入口聚类和分叉点数量。
+- `call_chain_analysis.json`：CodeGraph 深调用链证据，包含 business entry groups、branch points、上游 fan-in、下游 fan-out 和需要源码语义复核的路径。
 - `risk_report.md`：最终中文 Markdown 检测报告。
 
-`expand` 步不会默认展开所有 changed symbols，而是优先展开用户指定 symbol、高风险 symbol、public interface symbol、memory-lifetime symbol 和 pointer-alias-lifetime symbol。这样更适合百万级仓库和慢速内网模型。
+`expand` 步不会默认展开所有 changed symbols，而是优先展开用户指定 symbol、高风险 symbol、public interface symbol、memory-lifetime symbol 和 pointer-alias-lifetime symbol。它会对这些 symbol 做深调用链分析，兼顾本函数内分叉、近层 caller 分叉、深层业务入口 fan-in 和下游 fan-out。这样更适合百万级仓库和慢速内网模型。
 
 如果 Claude Code 在 `triage` 或 `expand` 后只在终端里回复了分析结论，没有生成 `.impact-scan/risk_report.md`，说明 agent 没有继续执行 `--step report`。可直接补跑：
 

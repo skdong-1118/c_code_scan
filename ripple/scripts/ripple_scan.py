@@ -1160,6 +1160,161 @@ def build_impact_paths(refs, config):
     return paths
 
 
+ENTRY_RE = re.compile(r"(api|handler|dispatch|entry|callback|cb|cmd|command|north|nb|legacy|main)", re.I)
+WRAPPER_RE = re.compile(r"(wrap|adapter|prepare|common|helper|util|inner|do_)", re.I)
+LOCAL_BRANCH_RE = re.compile(r"\b(if|switch|case|else|goto|return|error|fail|state|type|mode|cmd|event)\b|\?|&&|\|\|", re.I)
+
+
+def codegraph_depth_for_symbol(symbol, risk, default_depth):
+    categories = set(symbol.get("risk_categories", []))
+    score = risk.get("score", 0) if risk else 0
+    if score >= 8 or categories.intersection(set(["memory_leak", "memory_safety", "pointer_alias_lifetime", "callback_dispatch"])):
+        return max(default_depth, 15)
+    return default_depth
+
+
+def run_codegraph_call_chain(repo, symbol, depth, limit, status):
+    if status["mode"] == "off" or not status["executable"]:
+        return {}
+    commands = [
+        [status["executable"], "callchain", symbol, "--depth", str(depth)],
+        [status["executable"], "callchain", "--symbol", symbol, "--depth", str(depth)],
+        [status["executable"], "callers", symbol, "--depth", str(depth)],
+        [status["executable"], "callees", symbol, "--depth", str(depth)],
+    ]
+    for command in commands:
+        result = run(command, repo, check=False)
+        if result.returncode == 0 and result.stdout.strip():
+            return parse_codegraph_call_chain_text(result.stdout, symbol, limit)
+    return {}
+
+
+def parse_codegraph_call_chain_text(text, symbol, limit):
+    paths = []
+    callers = []
+    callees = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        names = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", line)
+        names = [name for name in names if name not in ("callers", "callees", "path", "symbol")]
+        if len(names) >= 2 and (symbol in names or "->" in line or "<-" in line):
+            if "<-" in line and "->" not in line:
+                names = list(reversed(names))
+            if len(paths) < limit:
+                paths.append(names[:])
+            if symbol in names:
+                pos = names.index(symbol)
+                callers.extend(names[:pos])
+                callees.extend(names[pos + 1:])
+        elif len(names) == 1:
+            if re.search(r"caller", line, re.I):
+                callers.append(names[0])
+            elif re.search(r"callee", line, re.I):
+                callees.append(names[0])
+    return {
+        "paths": paths[:limit],
+        "callers": unique_limited(callers, limit),
+        "callees": unique_limited(callees, limit),
+    }
+
+
+def entry_from_path(path, symbol):
+    if path:
+        for name in path:
+            if name != symbol and ENTRY_RE.search(name):
+                return name
+        for name in path:
+            if name != symbol and not WRAPPER_RE.search(name):
+                return name
+        return path[0]
+    return symbol
+
+
+def path_has_legacy_file(ref):
+    return bool(ref and ref.get("legacy_file_count", 0))
+
+
+def build_call_chain_analysis(symbols, refs, config, raw_graph=None, max_depth=12):
+    raw_graph = raw_graph or {}
+    refs_by_symbol = {ref["symbol"]: ref for ref in refs}
+    result = {
+        "mode": "deep-call-chain",
+        "default_max_depth": max_depth,
+        "symbols": [],
+    }
+
+    for symbol in symbols:
+        name = symbol["name"]
+        graph = raw_graph.get(name, {})
+        paths = graph.get("paths", []) or []
+        callers = unique_limited(graph.get("callers", []), 100)
+        callees = unique_limited(graph.get("callees", []), 100)
+        ref = refs_by_symbol.get(name)
+        branch_points = []
+
+        if LOCAL_BRANCH_RE.search(symbol.get("evidence", "")):
+            branch_points.append({
+                "kind": "local-control-flow",
+                "node": name,
+                "reason": "changed evidence contains local branch/state/error-flow signal",
+            })
+        if len(callers) > 1 or len(paths) > 1:
+            branch_points.append({
+                "kind": "upstream-fan-in",
+                "node": name,
+                "reason": "multiple callers or caller paths reach the changed function",
+            })
+        if len(callees) > 1:
+            branch_points.append({
+                "kind": "downstream-fan-out",
+                "node": name,
+                "reason": "changed function calls multiple downstream functions",
+            })
+
+        groups = []
+        if paths:
+            for path in paths[:50]:
+                entry = entry_from_path(path, name)
+                groups.append({
+                    "entry": entry,
+                    "path": path,
+                    "depth": max(0, len(path) - 1),
+                    "subsystem": configured_subsystem_for(ref["files"][0], config) if ref and ref.get("files") else "",
+                    "legacy_hit": path_has_legacy_file(ref) or bool(ENTRY_RE.search(entry) and "legacy" in entry.lower()),
+                    "needs_source_review": True,
+                })
+        elif ref:
+            for file_path in ref.get("files", [])[:50]:
+                groups.append({
+                    "entry": configured_subsystem_for(file_path, config),
+                    "path": [configured_subsystem_for(file_path, config), name],
+                    "depth": 1,
+                    "subsystem": configured_subsystem_for(file_path, config),
+                    "legacy_hit": path_matches_prefix(file_path, config["legacy_paths"]),
+                    "needs_source_review": True,
+                })
+
+        result["symbols"].append({
+            "symbol": name,
+            "kind": symbol.get("kind", ""),
+            "file": symbol.get("file", ""),
+            "max_depth": max_depth,
+            "callers": callers,
+            "callees": callees,
+            "branch_points": branch_points,
+            "business_entry_groups": groups,
+            "analysis_questions": [
+                "Which business entries reach this common flow?",
+                "Does the changed local branch affect every entry or only specific state/parameter combinations?",
+                "Where are key objects allocated, passed, escaped, and released along each path?",
+                "How do upstream callers consume return values, error codes, state fields, or side effects?",
+            ],
+        })
+    return result
+
+
 def unique_limited(values, limit=20):
     result = []
     seen = set()
@@ -1312,6 +1467,7 @@ def markdown_report(
     impact_paths,
     arch_summary,
     subsystem_analysis,
+    call_chain_analysis=None,
 ):
     top_level = risks[0]["level"] if risks else "low"
     max_score = risks[0]["score"] if risks else 0
@@ -1428,6 +1584,29 @@ def markdown_report(
             )
     else:
         lines.append("- 未发现 symbol-to-file impact path。")
+
+    call_chain_analysis = call_chain_analysis or {"symbols": []}
+    lines.extend(["", "## Deep Call-Chain Evidence", ""])
+    if call_chain_analysis.get("symbols"):
+        for item in call_chain_analysis["symbols"][:20]:
+            lines.append("### `{}`".format(item["symbol"]))
+            lines.append("- Max depth: {}".format(item.get("max_depth", 0)))
+            if item.get("branch_points"):
+                lines.append("- Branch points:")
+                for point in item["branch_points"][:8]:
+                    lines.append("  - {} at `{}`: {}".format(point["kind"], point["node"], point["reason"]))
+            if item.get("business_entry_groups"):
+                lines.append("- Business entry groups:")
+                for group in item["business_entry_groups"][:8]:
+                    legacy = "legacy" if group.get("legacy_hit") else "non-legacy"
+                    path = " -> ".join("`{}`".format(node) for node in group.get("path", [])[:12])
+                    lines.append("  - `{}` (depth {}, {}): {}".format(group["entry"], group.get("depth", 0), legacy, path))
+            lines.append("- Source-level review questions:")
+            for question in item.get("analysis_questions", [])[:4]:
+                lines.append("  - {}".format(question))
+            lines.append("")
+    else:
+        lines.append("- 未发现 deep call-chain evidence；若 CodeGraph 无调用链输出，需在 Step 3 说明证据不足。")
 
     memory_items = [item for item in risks if item["kind"] == "memory-lifetime"]
     pointer_alias_items = [item for item in risks if item["kind"] == "pointer-alias-lifetime" or "pointer_alias_lifetime" in item.get("risk_categories", [])]
@@ -1601,7 +1780,7 @@ def _expansion_candidates(risks, symbols, focus):
 
 
 def _step_expand(repo, out, config, codegraph, args, focus):
-    """Step 3: Focused reference expansion. Only search refs for selected symbols."""
+    """Step 3: Deep CodeGraph expansion for references and call-chain evidence."""
     files = _load_json_artifact(out, "diff_summary.json", [])
     symbols = _load_json_artifact(out, "changed_symbols.json", [])
     risks = _load_json_artifact(out, "risk_items.json", [])
@@ -1616,6 +1795,9 @@ def _step_expand(repo, out, config, codegraph, args, focus):
 
     selected, reasons = select_symbols_for_expansion(symbols, risks, focus)
 
+    risks_by_subject = {risk["subject"]: risk for risk in risks}
+    raw_call_graph = {}
+
     # Gather references only for selected symbols
     refs = []
     for sym in symbols:
@@ -1625,6 +1807,8 @@ def _step_expand(repo, out, config, codegraph, args, focus):
             if files_found:
                 backend = "codegraph"
                 codegraph["used_for_symbols"] += 1
+            depth = codegraph_depth_for_symbol(sym, risks_by_subject.get(sym["name"]), args.call_depth)
+            raw_call_graph[sym["name"]] = run_codegraph_call_chain(repo, sym["name"], depth, args.max_paths, codegraph)
             refs.append(reference_result(sym["name"], backend, files_found, config))
         else:
             refs.append(reference_result(sym["name"], "skipped", [], config))
@@ -1634,10 +1818,18 @@ def _step_expand(repo, out, config, codegraph, args, focus):
     risks = build_risk_items(files, symbols, refs, config)
     risks = filter_risks_by_focus(risks, focus)
     impact_paths = build_impact_paths(refs, config)
+    call_chain_analysis = build_call_chain_analysis(
+        [sym for sym in symbols if sym["name"] in selected],
+        refs,
+        config,
+        raw_call_graph,
+        args.call_depth,
+    )
 
     write_json(out / "codegraph_status.json", codegraph)
     write_json(out / "references.json", refs)
     write_json(out / "impact_paths.json", impact_paths)
+    write_json(out / "call_chain_analysis.json", call_chain_analysis)
     write_json(out / "risk_items.json", risks)
     write_json(out / "expansion_summary.json", {
         "total_symbols": len(symbols),
@@ -1649,6 +1841,13 @@ def _step_expand(repo, out, config, codegraph, args, focus):
             for name in sorted(selected)
         ],
         "codegraph_hits": codegraph["used_for_symbols"],
+        "call_chain_symbols": len(call_chain_analysis["symbols"]),
+        "business_entry_group_count": sum(
+            len(item["business_entry_groups"]) for item in call_chain_analysis["symbols"]
+        ),
+        "branch_point_count": sum(
+            len(item["branch_points"]) for item in call_chain_analysis["symbols"]
+        ),
     })
 
     print("Expansion complete.")
@@ -1664,6 +1863,7 @@ def _step_report(repo, out, config, codegraph, args, focus):
     symbols = _load_json_artifact(out, "changed_symbols.json", [])
     refs = _load_json_artifact(out, "references.json", [])
     risks = _load_json_artifact(out, "risk_items.json", [])
+    call_chain_analysis = _load_json_artifact(out, "call_chain_analysis.json", {"symbols": []})
     files = filter_files_by_focus(files, focus)
     symbols = filter_symbols_by_focus(symbols, focus)
     refs = filter_references_by_focus(refs, focus, config)
@@ -1692,11 +1892,13 @@ def _step_report(repo, out, config, codegraph, args, focus):
     subsystems = subsystem_impact(files, refs, config)
     subsystem_analysis = build_subsystem_analysis(files, refs, risks, impact_paths, config)
     arch_summary = build_architecture_risk_summary(risks)
+    if not call_chain_analysis.get("symbols"):
+        call_chain_analysis = build_call_chain_analysis(symbols, refs, config, {}, args.call_depth)
 
     report_text = markdown_report_with_focus(
         args.range, codegraph, files, symbols, refs, risks,
         subsystems, config, impact_paths, arch_summary,
-        subsystem_analysis, focus,
+        subsystem_analysis, focus, call_chain_analysis,
     )
 
     write_json(out / "codegraph_status.json", codegraph)
@@ -1727,13 +1929,13 @@ def _load_json_artifact(out, filename, default):
 def markdown_report_with_focus(
     commit_range, codegraph, files, symbols, refs, risks,
     subsystems, config, impact_paths, arch_summary,
-    subsystem_analysis, focus,
+    subsystem_analysis, focus, call_chain_analysis=None,
 ):
     """Generate markdown report with user focus coverage section."""
     base = markdown_report(
         commit_range, codegraph, files, symbols, refs, risks,
         subsystems, config, impact_paths, arch_summary,
-        subsystem_analysis,
+        subsystem_analysis, call_chain_analysis,
     )
 
     focus_names = set(focus.get("focus_symbols", []))
@@ -1776,6 +1978,8 @@ def main(argv=None):
     parser.add_argument("--subsystem", default="", help="repo-relative subsystem directory to scan, such as subsys/net")
     parser.add_argument("--max-symbols", type=int, default=200, help="maximum changed symbols to analyze")
     parser.add_argument("--max-refs", type=int, default=50, help="maximum reference files per symbol")
+    parser.add_argument("--call-depth", type=int, default=12, help="maximum CodeGraph caller/callee depth for Step 3")
+    parser.add_argument("--max-paths", type=int, default=50, help="maximum CodeGraph call-chain paths per symbol")
     parser.add_argument(
         "--codegraph-mode",
         choices=["required", "off"],
@@ -1881,6 +2085,7 @@ def main(argv=None):
     impact_paths = build_impact_paths(refs, config)
     subsystem_analysis = build_subsystem_analysis(files, refs, risks, impact_paths, config)
     arch_summary = build_architecture_risk_summary(risks)
+    call_chain_analysis = build_call_chain_analysis(symbols, refs, config, {}, args.call_depth)
 
     write_json(out / "scan_config.json", config)
     write_json(out / "codegraph_status.json", codegraph)
@@ -1892,12 +2097,13 @@ def main(argv=None):
     write_json(out / "architecture_risk_summary.json", arch_summary)
     write_json(out / "subsystem_impact.json", subsystems)
     write_json(out / "subsystem_analysis.json", subsystem_analysis)
+    write_json(out / "call_chain_analysis.json", call_chain_analysis)
     write_markdown_report(
         out / "risk_report.md",
         markdown_report_with_focus(
             args.range, codegraph, files, symbols, refs, risks,
             subsystems, config, impact_paths, arch_summary,
-            subsystem_analysis, focus,
+            subsystem_analysis, focus, call_chain_analysis,
         ),
     )
 

@@ -282,6 +282,54 @@ class CImpactScanTests(unittest.TestCase):
 
         self.assertEqual("none", refs[0]["backend"])
 
+    def test_call_chain_analysis_groups_deep_and_local_branch_points(self):
+        config = scan.default_scan_config("fosip/nbm")
+        symbols = [
+            scan.changed_symbol(
+                "common_flow",
+                "fosip/nbm/common.c",
+                "local-function-context",
+                "if (state == READY) { return enqueue(ctx); }",
+            )
+        ]
+        refs = [
+            scan.reference_result(
+                "common_flow",
+                "codegraph",
+                [
+                    "fosip/nbm/northbound/open_handler.c",
+                    "fosip/nem/legacy/old_handler.c",
+                    "fosip/nio/dispatch/msg_dispatch.c",
+                ],
+                config,
+            )
+        ]
+        raw_graph = {
+            "common_flow": {
+                "paths": [
+                    ["nbm_open_api", "nbm_prepare", "common_flow"],
+                    ["legacy_nbm_open", "nbm_prepare", "common_flow"],
+                    ["msg_dispatch", "nbm_msg_handler", "common_flow"],
+                ],
+                "callers": ["nbm_prepare", "nbm_msg_handler"],
+                "callees": ["enqueue", "set_state"],
+            }
+        }
+
+        analysis = scan.build_call_chain_analysis(symbols, refs, config, raw_graph, max_depth=15)
+
+        item = analysis["symbols"][0]
+        self.assertEqual("common_flow", item["symbol"])
+        self.assertEqual(15, item["max_depth"])
+        self.assertIn("local-control-flow", [point["kind"] for point in item["branch_points"]])
+        self.assertIn("upstream-fan-in", [point["kind"] for point in item["branch_points"]])
+        self.assertIn("downstream-fan-out", [point["kind"] for point in item["branch_points"]])
+        entries = [group["entry"] for group in item["business_entry_groups"]]
+        self.assertIn("nbm_open_api", entries)
+        self.assertIn("legacy_nbm_open", entries)
+        self.assertIn("msg_dispatch", entries)
+        self.assertTrue(any(group["legacy_hit"] for group in item["business_entry_groups"]))
+
     def test_required_codegraph_mode_fails_when_index_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_git_repo(tmp)
@@ -873,6 +921,31 @@ class CImpactScanTests(unittest.TestCase):
             finally:
                 os.chdir(str(old_cwd))
 
+    def test_step_expand_writes_deep_call_chain_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo_with_local_variable_change(tmp)
+            out = repo / ".impact-scan"
+            old_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(str(repo))
+                scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                           "--step", "discover", "--codegraph-mode", "off"])
+                scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                           "--step", "triage", "--codegraph-mode", "off"])
+                ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
+                                 "--step", "expand", "--codegraph-mode", "off"])
+
+                self.assertEqual(0, ret)
+                self.assertTrue((out / "call_chain_analysis.json").exists())
+                analysis = json.loads((out / "call_chain_analysis.json").read_text(encoding="utf-8"))
+                summary = json.loads((out / "expansion_summary.json").read_text(encoding="utf-8"))
+                self.assertEqual("deep-call-chain", analysis["mode"])
+                self.assertIn("business_entry_group_count", summary)
+                self.assertIn("branch_point_count", summary)
+            finally:
+                os.chdir(str(old_cwd))
+
     def test_step_report_includes_focus_coverage_section(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_git_repo(tmp)
@@ -928,6 +1001,9 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("Do not run Step 1 through Step 4 in one uninterrupted sequence", skill_text)
         self.assertNotIn("Evidence " + "review", skill_text)
         self.assertNotIn("Step " + "5", skill_text)
+        self.assertIn("Deep call-chain analysis", skill_text)
+        self.assertIn("business entry groups", skill_text)
+        self.assertIn("branch points", skill_text)
         self.assertIn("references/risk-rules.md", skill_text)
         self.assertIn("references/report-format.md", skill_text)
         self.assertLess(len(skill_text.splitlines()), 260)

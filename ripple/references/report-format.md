@@ -14,6 +14,7 @@ The final report is Chinese Markdown and normally includes:
 - 受影响 subsystem 候选
 - Reference Evidence
 - Impact Paths
+- Deep Call-Chain Evidence
 - 生命周期风险证据
 - 内存泄漏关注点
 - 指针别名与生命周期关注点
@@ -27,6 +28,7 @@ Do not include the removed mandatory-review section.
 Use these layer meanings:
 
 - CodeGraph 层: reference/caller/callee/include/subsystem impact evidence. Local variable changes are first mapped to the enclosing function, then expanded with CodeGraph.
+- Deep call-chain 层: use `.impact-scan/call_chain_analysis.json` to explain business entry groups, branch points, upstream fan-in, downstream fan-out, and paths that need source-level semantic review.
 - Heuristic 层: deterministic risk signals from functions, paths, diff content, categories, object types, fields, ownership APIs, and escape points.
 - 生命周期证据层: heap allocation, container insert/remove, callback opaque, struct field escape, and error cleanup evidence.
 

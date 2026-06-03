@@ -39,7 +39,7 @@ Do not run Step 1 through Step 4 in one uninterrupted sequence in guided mode.
 Step 0: Focus intake -> 自动推断 scope / 使用内置风险项
 Step 1: Scope discovery -> 发现扫描范围 -> 用户确认
 Step 2: Risk triage -> 初步风险分诊 -> 用户确认
-Step 3: Focused expansion -> CodeGraph 定向扩展 / 关键证据确认
+Step 3: Deep call-chain analysis -> CodeGraph 深调用链 / 业务入口聚类 / 关键证据确认
 Step 4: Final report -> 生成最终报告
 ```
 
@@ -71,13 +71,23 @@ For risk details, read `references/risk-rules.md` only when you need to explain 
 python3 ripple/scripts/ripple_scan.py --step expand --range HEAD~1..HEAD --codegraph-mode required
 ```
 
-Use CodeGraph only. Expand references for focus symbols, high-risk symbols, public interface symbols, memory/lifetime symbols, pointer-alias symbols, and enclosing functions for local field/heap/container/callback changes.
+Use CodeGraph only. Expand references and deep caller/callee paths for focus symbols, high-risk symbols, public interface symbols, memory/lifetime symbols, pointer-alias symbols, and enclosing functions for local field/heap/container/callback changes.
 
-Summarize `.impact-scan/expansion_summary.json`: expanded symbols, reasons, CodeGraph hits, and missing reference evidence. Include only the key evidence that needs confirmation:
+Deep call-chain analysis must consider multiple shapes, not only one long stack:
+
+- branch points inside the changed function, such as `if/switch/state/mode/error` paths
+- near callers where multiple flows directly share the common function
+- deep upstream fan-in where business entries split many wrapper layers above the changed function
+- downstream fan-out where the changed function calls different state, queue, callback, or lifecycle helpers
+
+Read `.impact-scan/call_chain_analysis.json` and group paths by business entry groups. For each important group, explain what the changed function means in that business flow. CodeGraph finds the graph; you must interpret the graph with source-level semantics.
+
+Summarize `.impact-scan/expansion_summary.json`: expanded symbols, reasons, CodeGraph hits, business entry group count, branch points, and missing reference evidence. Include only the key evidence that needs confirmation:
 
 - inferred subsystem and ambiguous candidates, if any
 - public interface or legacy path hits
 - CodeGraph reference hits and impact paths
+- business entry groups and branch points from deep call-chain analysis
 - lifecycle evidence for heap objects, containers, callbacks, and pointer escapes
 
 Stop and ask whether to generate the report.
