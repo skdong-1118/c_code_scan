@@ -155,7 +155,7 @@ codegraph init -i
 - Step 1 `discover` 完成后，Claude Code 应该展示变更范围摘要，并等待你确认扫描范围。
 - Step 2 `triage` 完成后，Claude Code 应该展示风险数量和 expansion candidates，并等待你确认是否继续。
 - Step 3 `expand` 完成后，Claude Code 应该展示 CodeGraph 命中和 reference evidence，并等待你确认是否生成报告。
-- Step 5 `report` 完成后，才算最终完成，必须生成 `.impact-scan/risk_report.md`。
+- Step 4 `report` 完成后，才算最终完成，必须生成 `.impact-scan/risk_report.md`。
 
 只有当你明确说“直接生成报告”、“全自动”、“不用确认”、“one-shot” 或用于 CI 时，才允许跳过中间确认。
 

@@ -33,15 +33,14 @@ Terminal or chat summaries are not completion.
 
 ## Interactive Guided Mode
 
-Do not run Step 1 through Step 5 in one uninterrupted sequence in guided mode.
+Do not run Step 1 through Step 4 in one uninterrupted sequence in guided mode.
 
 ```text
 Step 0: Focus intake -> 自动推断 scope / 使用内置风险项
 Step 1: Scope discovery -> 发现扫描范围 -> 用户确认
 Step 2: Risk triage -> 初步风险分诊 -> 用户确认
-Step 3: Focused expansion -> CodeGraph 定向扩展 -> 用户确认
-Step 4: Evidence review -> 关键证据确认
-Step 5: Final report -> 生成最终报告
+Step 3: Focused expansion -> CodeGraph 定向扩展 / 关键证据确认
+Step 4: Final report -> 生成最终报告
 ```
 
 ### Step 1: discover
@@ -74,11 +73,7 @@ python3 ripple/scripts/ripple_scan.py --step expand --range HEAD~1..HEAD --codeg
 
 Use CodeGraph only. Expand references for focus symbols, high-risk symbols, public interface symbols, memory/lifetime symbols, pointer-alias symbols, and enclosing functions for local field/heap/container/callback changes.
 
-Summarize `.impact-scan/expansion_summary.json`: expanded symbols, reasons, CodeGraph hits, and missing reference evidence.
-
-### Step 4: evidence review
-
-Show only the key evidence that needs user confirmation:
+Summarize `.impact-scan/expansion_summary.json`: expanded symbols, reasons, CodeGraph hits, and missing reference evidence. Include only the key evidence that needs confirmation:
 
 - inferred subsystem and ambiguous candidates, if any
 - public interface or legacy path hits
@@ -87,7 +82,7 @@ Show only the key evidence that needs user confirmation:
 
 Stop and ask whether to generate the report.
 
-### Step 5: report
+### Step 4: report
 
 ```bash
 python3 ripple/scripts/ripple_scan.py --step report --range HEAD~1..HEAD --codegraph-mode required

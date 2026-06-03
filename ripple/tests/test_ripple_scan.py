@@ -531,6 +531,61 @@ class CImpactScanTests(unittest.TestCase):
         scan.run(["git", "commit", "-m", "local change"], repo)
         return repo
 
+    def _make_git_repo_with_multiline_function_local_change(self, tmp):
+        repo = Path(tmp)
+        scan.run(["git", "init"], repo)
+        scan.run(["git", "config", "user.email", "test@test"], repo)
+        scan.run(["git", "config", "user.name", "test"], repo)
+        source_dir = repo / "fosip" / "nbm"
+        source_dir.mkdir(parents=True)
+        (source_dir / "api.c").write_text(
+            "\n".join(
+                [
+                    "int wrong_helper(void)",
+                    "{",
+                    "    return 0;",
+                    "}",
+                    "",
+                    "static int",
+                    "nbm_api(",
+                    "    int flag,",
+                    "    int mode)",
+                    "{",
+                    "    int ret = flag;",
+                    "    return ret + mode;",
+                    "}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        scan.run(["git", "add", "."], repo)
+        scan.run(["git", "commit", "-m", "initial"], repo)
+        (source_dir / "api.c").write_text(
+            "\n".join(
+                [
+                    "int wrong_helper(void)",
+                    "{",
+                    "    return 0;",
+                    "}",
+                    "",
+                    "static int",
+                    "nbm_api(",
+                    "    int flag,",
+                    "    int mode)",
+                    "{",
+                    "    int ret = flag + 1;",
+                    "    return ret + mode;",
+                    "}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        scan.run(["git", "add", "."], repo)
+        scan.run(["git", "commit", "-m", "multiline local change"], repo)
+        return repo
+
     def _make_git_repo_with_heap_lifetime_change(self, tmp):
         repo = Path(tmp)
         scan.run(["git", "init"], repo)
@@ -675,6 +730,30 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("ret = flag + 1", symbols[0]["evidence"])
         self.assertIn("nbm_api", selected)
         self.assertEqual("local change in enclosing function", reasons["nbm_api"])
+
+    def test_local_change_in_multiline_function_uses_real_enclosing_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_git_repo_with_multiline_function_local_change(tmp)
+            config = scan.default_scan_config("fosip/nbm")
+
+            symbols = scan.extract_symbols(repo, "HEAD~1..HEAD", 20, config)
+
+        self.assertEqual(["nbm_api"], [symbol["name"] for symbol in symbols])
+        self.assertNotIn("wrong_helper", [symbol["name"] for symbol in symbols])
+        self.assertEqual("local-function-context", symbols[0]["kind"])
+        self.assertIn("ret = flag + 1", symbols[0]["evidence"])
+
+    def test_function_boundary_allows_struct_parameters(self):
+        lines = [
+            "struct nbm_msg { int id; };",
+            "static int nbm_api(struct nbm_msg *msg)",
+            "{",
+            "    int ret = msg->id;",
+            "    return ret;",
+            "}",
+        ]
+
+        self.assertEqual([(2, 6, "nbm_api")], scan.function_ranges(lines))
 
     def test_heap_lifetime_change_expands_enclosing_function_with_lifecycle_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -846,7 +925,9 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("name: ripple", skill_text)
         self.assertIn("Interactive Guided", skill_text)
         self.assertIn("stop and wait", skill_text)
-        self.assertIn("Do not run Step 1 through Step 5 in one uninterrupted sequence", skill_text)
+        self.assertIn("Do not run Step 1 through Step 4 in one uninterrupted sequence", skill_text)
+        self.assertNotIn("Evidence " + "review", skill_text)
+        self.assertNotIn("Step " + "5", skill_text)
         self.assertIn("references/risk-rules.md", skill_text)
         self.assertIn("references/report-format.md", skill_text)
         self.assertLess(len(skill_text.splitlines()), 260)

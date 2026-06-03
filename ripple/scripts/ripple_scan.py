@@ -689,6 +689,108 @@ def diff_lines(repo, commit_range, config=None):
             yield current_file, line[1:], new_line
 
 
+def strip_c_comments(line, in_block_comment):
+    """Remove C comments enough for function-boundary scanning."""
+    out = []
+    i = 0
+    while i < len(line):
+        if in_block_comment:
+            end = line.find("*/", i)
+            if end == -1:
+                return "".join(out), True
+            i = end + 2
+            in_block_comment = False
+            continue
+        if line.startswith("/*", i):
+            in_block_comment = True
+            i += 2
+            continue
+        if line.startswith("//", i):
+            break
+        out.append(line[i])
+        i += 1
+    return "".join(out), in_block_comment
+
+
+def c_brace_delta(line):
+    return line.count("{") - line.count("}")
+
+
+def function_name_from_signature(signature):
+    signature = re.sub(r"\s+", " ", signature or "").strip()
+    if not signature or ";" in signature:
+        return ""
+    if re.search(r"(^|\s)(typedef|struct|union|enum)\b", signature):
+        return ""
+    if "=" in signature:
+        return ""
+    match = FUNC_DEF_RE.match(signature)
+    if not match:
+        return ""
+    name = match.group("name")
+    if name in CONTROL_KEYWORDS:
+        return ""
+    return name
+
+
+def function_ranges(lines):
+    ranges = []
+    pending = []
+    pending_start = 0
+    brace_depth = 0
+    active_name = ""
+    active_start = 0
+    in_block_comment = False
+
+    for idx, raw_line in enumerate(lines, 1):
+        code, in_block_comment = strip_c_comments(raw_line, in_block_comment)
+        stripped = code.strip()
+
+        if brace_depth == 0:
+            if not stripped or stripped.startswith("#"):
+                pending = []
+                pending_start = 0
+                continue
+
+            if not pending:
+                pending_start = idx
+            pending.append(stripped)
+
+            if "{" not in code:
+                if stripped.endswith(";"):
+                    pending = []
+                    pending_start = 0
+                continue
+
+            signature_text = " ".join(pending).split("{", 1)[0].strip()
+            name = function_name_from_signature(signature_text)
+            brace_depth = c_brace_delta(code)
+            pending = []
+
+            if name:
+                active_name = name
+                active_start = pending_start or idx
+                if brace_depth <= 0:
+                    ranges.append((active_start, idx, active_name))
+                    active_name = ""
+                    active_start = 0
+                    brace_depth = 0
+            elif brace_depth <= 0:
+                brace_depth = 0
+            pending_start = 0
+            continue
+
+        brace_depth += c_brace_delta(code)
+        if brace_depth <= 0:
+            if active_name:
+                ranges.append((active_start, idx, active_name))
+            active_name = ""
+            active_start = 0
+            brace_depth = 0
+
+    return ranges
+
+
 def enclosing_function_for_line(repo, file_path, line_number):
     if not file_path or not line_number:
         return ""
@@ -699,14 +801,10 @@ def enclosing_function_for_line(repo, file_path, line_number):
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except TypeError:
         lines = path.read_text(encoding="utf-8").splitlines()
-    current = ""
-    for raw_line in lines[:line_number]:
-        match = FUNC_DEF_RE.match(raw_line.strip())
-        if match:
-            name = match.group("name")
-            if name not in CONTROL_KEYWORDS:
-                current = name
-    return current
+    for start, end, name in function_ranges(lines):
+        if start <= line_number <= end:
+            return name
+    return ""
 
 
 def annotate_local_context(symbol, role):
@@ -1561,7 +1659,7 @@ def _step_expand(repo, out, config, codegraph, args, focus):
 
 
 def _step_report(repo, out, config, codegraph, args, focus):
-    """Step 5: Generate final Chinese Markdown report from all collected artifacts."""
+    """Generate final Chinese Markdown report from all collected artifacts."""
     files = _load_json_artifact(out, "diff_summary.json", [])
     symbols = _load_json_artifact(out, "changed_symbols.json", [])
     refs = _load_json_artifact(out, "references.json", [])
