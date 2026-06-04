@@ -32,13 +32,13 @@ Add these directories to the service account `PATH`, or configure the agent runt
 Claude Code should run the scan in CodeGraph required mode:
 
 ```bash
-python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode required
+python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --codegraph-mode required
 ```
 
 Required mode fails fast when CodeGraph is unavailable:
 
 ```bash
-python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode required
+python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --codegraph-mode required
 ```
 
 ## Path and Shell Rules

@@ -34,7 +34,7 @@ Use these layer meanings:
 
 Step 4 must reference `.impact-scan/step3f_completion.json`. If it is missing or `step3_complete` is not true, the final report is premature.
 
-Call-chain paths must keep their terminal status: `complete_to_entry`, `complete_to_root`, `incomplete_depth_limit`, `truncated_path_budget`, or `evidence_gap`. Unresolved paths are evidence gaps, not proof of low impact.
+Call-chain analysis must target the top-level business entry or root caller, not a fixed depth. Depth is only a CodeGraph search budget. Only `complete_to_entry` and `complete_to_root` are successful terminal statuses; `incomplete_depth_limit`, `truncated_path_budget`, and `evidence_gap` are unresolved evidence gaps, not proof of low impact.
 
 ## Confidence
 

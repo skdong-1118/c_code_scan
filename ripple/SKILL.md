@@ -32,7 +32,7 @@ The guided workflow state is:
 ## Core Rules
 
 - Require `codegraph` with `--codegraph-mode required`; do not use Grep, ripgrep, `rg`, or Claude Code's Grep tool for reference search.
-- Default to interactive guided mode. stop and wait after each scanner step unless the user clearly says `直接生成报告`, `不用确认`, `全自动`, `one-shot`, or `CI`.
+- Default mode is interactive guided mode. Even if the user only says "analyze", stop and wait after each scanner step unless they clearly say `直接生成报告`, `不用确认`, `全自动`, `one-shot`, or `CI`.
 - Do not ask for subsystem, focus symbols, risk categories, or ignore paths by default. Infer scope from latest-commit git changed files.
 - Starting a new analysis clears previous scan artifacts at `discover` or one-shot start. Do not clear artifacts before `triage`, `expand`, or `report`.
 - Target systems are single-threaded. Do not add a separate threading, multiprocess, or execution-model review section.
@@ -88,9 +88,11 @@ Deep call-chain analysis must consider multiple shapes, not only one long stack:
 - deep upstream fan-in where business entries split many wrapper layers above the changed function
 - downstream fan-out where the changed function calls different state, queue, callback, or lifecycle helpers
 
+Trace caller paths to the top-level business entry or root caller. Do not set a fixed call-stack depth as the analysis target; depth is only a CodeGraph search budget.
+
 Step 3 writes structured JSON artifacts. It does not write a Markdown review file.
 
-Do not stop call-chain expansion because it seems enough. Stop only on an explicit terminal condition: `complete_to_entry`, `complete_to_root`, `incomplete_depth_limit`, `truncated_path_budget`, or `evidence_gap`. If any selected symbol has no `complete_to_entry` or `complete_to_root` path, do not claim low impact; report the evidence gap.
+Do not stop call-chain expansion because it seems enough. Success terminal conditions are only `complete_to_entry` or `complete_to_root`; `incomplete_depth_limit`, `truncated_path_budget`, and `evidence_gap` are incomplete evidence gaps. If any selected symbol has no successful path, do not claim low impact.
 
 Step 3 is complete only when these artifacts exist:
 

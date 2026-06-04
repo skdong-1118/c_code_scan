@@ -1727,7 +1727,7 @@ def markdown_report(
     if call_chain_analysis.get("symbols"):
         for item in call_chain_analysis["symbols"][:20]:
             lines.append("### `{}`".format(item["symbol"]))
-            lines.append("- Max depth: {}".format(item.get("max_depth", 0)))
+            lines.append("- 深度预算（不是完成条件）: {}".format(item.get("max_depth", 0)))
             if item.get("branch_points"):
                 lines.append("- Branch points:")
                 for point in item["branch_points"][:8]:
@@ -2159,7 +2159,12 @@ def main(argv=None):
     parser.add_argument("--subsystem", default="", help="repo-relative subsystem directory to scan, such as subsys/net")
     parser.add_argument("--max-symbols", type=int, default=200, help="maximum changed symbols to analyze")
     parser.add_argument("--max-refs", type=int, default=50, help="maximum reference files per symbol")
-    parser.add_argument("--call-depth", type=int, default=12, help="maximum CodeGraph caller/callee depth for Step 3")
+    parser.add_argument(
+        "--call-depth",
+        type=int,
+        default=12,
+        help="CodeGraph caller/callee search budget for Step 3; analysis still targets top-level business entry/root",
+    )
     parser.add_argument("--max-paths", type=int, default=50, help="maximum CodeGraph call-chain paths per symbol")
     parser.add_argument(
         "--codegraph-mode",

@@ -113,19 +113,19 @@ ripple/
 在目标 C 工程的仓库根目录执行。
 
 ```bash
-python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode required
+python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --codegraph-mode required
 ```
 
 默认必须使用 CodeGraph，不允许降级到 `rg`。如果 CodeGraph 不可用，扫描会失败。
 
 ```bash
-python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode required
+python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --codegraph-mode required
 ```
 
 如果允许初始化 CodeGraph：
 
 ```bash
-python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode required --init-codegraph
+python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --codegraph-mode required --init-codegraph
 ```
 
 当前脚本初始化时会尝试：
@@ -145,11 +145,11 @@ codegraph init -i
 
 ## 推荐分步流程
 
-内网模型能力较弱或仓库较大时，推荐使用 interactive guided workflow。它把一次完整分析拆成 scope discovery、triage、focused expansion、report 四步，避免模型一次性消化过多上下文。
+默认运行方式就是 interactive guided workflow。内网模型能力较弱或仓库较大时，不要一次跑完整流程；应把分析拆成 scope discovery、triage、focused expansion、report 四步，避免模型一次性消化过多上下文。
 
 默认交互规则：
 
-- 用户只说“分析最近一次修改对已有功能的影响”时，默认走交互式分步流程。
+- 用户只说“分析最近一次修改对已有功能的影响”或“重新分析本项目”时，默认走交互式分步流程。
 - Step 0 不再要求用户选择 subsystem、symbol、风险项或忽略路径；默认先读取当前分支最后一个 commit 的 git 修改路径，再实时推断完整 subsystem 路径，并使用内置风险项。
 - 每次新分析开始前会主动清空输出目录里的旧分析结果；`discover` 和 one-shot 会重建 `.impact-scan/`，后续 `triage` / `expand` / `report` 不会清空前一步产物。
 - Step 1 `discover` 完成后，Claude Code 应该展示变更范围摘要，并等待你确认扫描范围。
@@ -160,10 +160,10 @@ codegraph init -i
 只有当你明确说“直接生成报告”、“全自动”、“不用确认”、“one-shot” 或用于 CI 时，才允许跳过中间确认。
 
 ```bash
-python3 .claude/skills/ripple/scripts/ripple_scan.py --step discover --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode required
-python3 .claude/skills/ripple/scripts/ripple_scan.py --step triage --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode required
-python3 .claude/skills/ripple/scripts/ripple_scan.py --step expand --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode required
-python3 .claude/skills/ripple/scripts/ripple_scan.py --step report --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode required
+python3 .claude/skills/ripple/scripts/ripple_scan.py --step discover --range HEAD~1..HEAD --codegraph-mode required
+python3 .claude/skills/ripple/scripts/ripple_scan.py --step triage --range HEAD~1..HEAD --codegraph-mode required
+python3 .claude/skills/ripple/scripts/ripple_scan.py --step expand --range HEAD~1..HEAD --codegraph-mode required
+python3 .claude/skills/ripple/scripts/ripple_scan.py --step report --range HEAD~1..HEAD --codegraph-mode required
 ```
 
 四步输出的核心文件：
@@ -178,18 +178,18 @@ python3 .claude/skills/ripple/scripts/ripple_scan.py --step report --range HEAD~
 
 `expand` 步不会默认展开所有 changed symbols，而是优先展开用户指定 symbol、高风险 symbol、public interface symbol、memory-lifetime symbol 和 pointer-alias-lifetime symbol。它会对这些 symbol 做深调用链分析，兼顾本函数内分叉、近层 caller 分叉、深层业务入口 fan-in 和下游 fan-out。这样更适合百万级仓库和慢速内网模型。
 
-调用链不能由 agent 主观判断“够了”就停止。每条 business entry path 必须标记为 `complete_to_entry`、`complete_to_root`、`incomplete_depth_limit`、`truncated_path_budget` 或 `evidence_gap`。如果 Step 3 没有生成 `step3f_completion.json`，或其中 `step3_complete` 不是 `true`，Step 4 `report` 会拒绝生成最终报告。
+调用链不能由 agent 主观判断“够了”就停止，也不能把固定层级当成分析目标。Step 3 的目标是沿调用关系追到顶层 business entry 或 root caller；深度参数只是 CodeGraph 搜索预算。每条 business entry path 必须标记为 `complete_to_entry`、`complete_to_root`、`incomplete_depth_limit`、`truncated_path_budget` 或 `evidence_gap`，其中只有前两者表示成功闭合，后三者都是 evidence gap。如果 Step 3 没有生成 `step3f_completion.json`，或其中 `step3_complete` 不是 `true`，Step 4 `report` 会拒绝生成最终报告。
 
 如果 Claude Code 在 `triage` 或 `expand` 后只在终端里回复了分析结论，没有生成 `.impact-scan/risk_report.md`，说明 agent 没有继续执行 `--step report`。可直接补跑：
 
 ```bash
-python3 .claude/skills/ripple/scripts/ripple_scan.py --step report --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode required
+python3 .claude/skills/ripple/scripts/ripple_scan.py --step report --range HEAD~1..HEAD --codegraph-mode required
 ```
 
 如果前面的 JSON 中间文件也不存在，则直接运行 one-shot：
 
 ```bash
-python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --subsystem subsys/net --codegraph-mode required
+python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --codegraph-mode required
 ```
 
 ## Focus 配置
@@ -280,10 +280,10 @@ low_risk_paths:
   - docs/
 ```
 
-当指定：
+当 `discover` 根据最新一次 git 修改推断出 scope，例如：
 
 ```text
---subsystem subsys/net
+subsys/net
 ```
 
 配置里的：
