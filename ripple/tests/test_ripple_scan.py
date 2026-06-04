@@ -262,6 +262,44 @@ class CImpactScanTests(unittest.TestCase):
         self.assertTrue(any("memory_safety" in reason for reason in reasons))
         self.assertNotIn("security" + "_boundary", symbol["risk_categories"])
 
+    def test_shallow_non_entry_caller_is_not_complete_root(self):
+        status = scan.call_chain_termination_status(
+            ["middle_helper", "changed_func"],
+            "middle_helper",
+            "changed_func",
+            max_depth=12,
+        )
+
+        self.assertEqual("evidence_gap", status)
+
+    def test_step3_completion_requires_successful_call_chain_path(self):
+        analysis = {
+            "symbols": [
+                {
+                    "symbol": "changed_func",
+                    "business_entry_groups": [
+                        {
+                            "entry": "middle_helper",
+                            "path": ["middle_helper", "changed_func"],
+                            "depth": 1,
+                            "termination_status": "evidence_gap",
+                            "legacy_hit": False,
+                            "needs_source_review": True,
+                        }
+                    ],
+                    "branch_points": [],
+                    "file": "fosip/nbm/x.c",
+                    "kind": "function",
+                }
+            ]
+        }
+
+        artifacts = scan.build_step3_structured_artifacts(analysis)
+        completion = artifacts["step3f_completion.json"]
+
+        self.assertFalse(completion["step3_complete"])
+        self.assertIn("successful_call_chain_path", completion["missing_sections"])
+
     def test_decodes_utf8_subprocess_output_for_linux_locale(self):
         raw = "中文路径/模块.c -> €\n".encode("utf-8")
 
@@ -971,9 +1009,9 @@ class CImpactScanTests(unittest.TestCase):
                 self.assertEqual("deep-call-chain", analysis["mode"])
                 self.assertIn("business_entry_group_count", summary)
                 self.assertIn("branch_point_count", summary)
-                self.assertTrue(completion["step3_complete"])
-                self.assertEqual([], completion["missing_sections"])
-                self.assertEqual("report", state["next_required_step"])
+                self.assertFalse(completion["step3_complete"])
+                self.assertIn("successful_call_chain_path", completion["missing_sections"])
+                self.assertEqual("expand", state["next_required_step"])
             finally:
                 os.chdir(str(old_cwd))
 
@@ -1040,6 +1078,11 @@ class CImpactScanTests(unittest.TestCase):
                            "--step", "triage", "--codegraph-mode", "off"])
                 scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
                            "--step", "expand", "--codegraph-mode", "off"])
+                completion = out / "step3f_completion.json"
+                data = json.loads(completion.read_text(encoding="utf-8"))
+                data["step3_complete"] = True
+                data["missing_sections"] = []
+                completion.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
                 ret = scan.main(["--range", "HEAD~1..HEAD", "--out", ".impact-scan",
                                  "--step", "report", "--codegraph-mode", "off",
                                  "--focus-symbols", "main"])

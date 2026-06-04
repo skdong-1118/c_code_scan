@@ -178,7 +178,7 @@ python3 .claude/skills/ripple/scripts/ripple_scan.py --step report --range HEAD~
 
 `expand` 步不会默认展开所有 changed symbols，而是优先展开用户指定 symbol、高风险 symbol、public interface symbol、memory-lifetime symbol 和 pointer-alias-lifetime symbol。它会对这些 symbol 做深调用链分析，兼顾本函数内分叉、近层 caller 分叉、深层业务入口 fan-in 和下游 fan-out。这样更适合百万级仓库和慢速内网模型。
 
-调用链不能由 agent 主观判断“够了”就停止，也不能把固定层级当成分析目标。Step 3 的目标是沿调用关系追到顶层 business entry 或 root caller；深度参数只是 CodeGraph 搜索预算。每条 business entry path 必须标记为 `complete_to_entry`、`complete_to_root`、`incomplete_depth_limit`、`truncated_path_budget` 或 `evidence_gap`，其中只有前两者表示成功闭合，后三者都是 evidence gap。如果 Step 3 没有生成 `step3f_completion.json`，或其中 `step3_complete` 不是 `true`，Step 4 `report` 会拒绝生成最终报告。
+调用链不能由 agent 主观判断“够了”就停止，也不能把固定层级当成分析目标。Step 3 的目标是沿调用关系追到顶层 business entry 或 root caller；深度参数只是 CodeGraph 搜索预算。每条 business entry path 必须标记为 `complete_to_entry`、`complete_to_root`、`incomplete_depth_limit`、`truncated_path_budget` 或 `evidence_gap`，其中只有前两者表示成功闭合，后三者都是 evidence gap。只有一层或浅层普通 caller 不算 root 证据；如果没有成功闭合路径，`workflow_state.json` 会继续要求 `expand`。如果 Step 3 没有生成 `step3f_completion.json`，或其中 `step3_complete` 不是 `true`，Step 4 `report` 会拒绝生成最终报告。
 
 如果 Claude Code 在 `triage` 或 `expand` 后只在终端里回复了分析结论，没有生成 `.impact-scan/risk_report.md`，说明 agent 没有继续执行 `--step report`。可直接补跑：
 

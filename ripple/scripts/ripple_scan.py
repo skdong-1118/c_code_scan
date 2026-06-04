@@ -1165,6 +1165,7 @@ def build_impact_paths(refs, config):
 
 
 ENTRY_RE = re.compile(r"(api|handler|dispatch|entry|callback|cb|cmd|command|north|nb|legacy|main)", re.I)
+ROOT_RE = re.compile(r"(main|init|start|boot|service|task|timer|event|daemon|run|loop)", re.I)
 WRAPPER_RE = re.compile(r"(wrap|adapter|prepare|common|helper|util|inner|do_)", re.I)
 LOCAL_BRANCH_RE = re.compile(r"\b(if|switch|case|else|goto|return|error|fail|state|type|mode|cmd|event)\b|\?|&&|\|\|", re.I)
 CALL_CHAIN_TERMINATION_STATUSES = set([
@@ -1254,9 +1255,16 @@ def call_chain_termination_status(path, entry, symbol, max_depth, path_count=0, 
         return "incomplete_depth_limit"
     if entry and entry != symbol and ENTRY_RE.search(entry):
         return "complete_to_entry"
-    if path:
+    if path and entry and entry != symbol and ROOT_RE.search(entry):
         return "complete_to_root"
     return "evidence_gap"
+
+
+def has_successful_call_chain_path(item):
+    for group in item.get("business_entry_groups", []):
+        if group.get("termination_status") in ("complete_to_entry", "complete_to_root"):
+            return True
+    return False
 
 
 def build_call_chain_analysis(symbols, refs, config, raw_graph=None, max_depth=12):
@@ -1550,6 +1558,8 @@ def build_step3_structured_artifacts(call_chain_analysis):
     missing_sections = []
     if not symbols:
         missing_sections.append("selected_symbols")
+    if symbols and not all(has_successful_call_chain_path(item) for item in symbols):
+        missing_sections.append("successful_call_chain_path")
 
     completion = {
         "step3_complete": not missing_sections,
@@ -1998,11 +2008,15 @@ def _step_expand(repo, out, config, codegraph, args, focus):
         ),
         "step3_complete": step3_artifacts["step3f_completion.json"]["step3_complete"],
     })
-    write_workflow_state(out, ["discover", "triage", "expand"], "report")
+    step3_complete = step3_artifacts["step3f_completion.json"]["step3_complete"]
+    next_required_step = "report" if step3_complete else "expand"
+    write_workflow_state(out, ["discover", "triage", "expand"], next_required_step)
 
     print("Expansion complete.")
     print("  Expanded {} / {} symbols".format(len(selected), len(symbols)))
     print("  CodeGraph hits: {}".format(codegraph["used_for_symbols"]))
+    if not step3_complete:
+        print("  Step 3 incomplete: call-chain evidence has not reached a confirmed business entry/root")
     print("wrote {}".format(out / "expansion_summary.json"))
     return 0
 

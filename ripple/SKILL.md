@@ -94,6 +94,8 @@ Step 3 writes structured JSON artifacts. It does not write a Markdown review fil
 
 Do not stop call-chain expansion because it seems enough. Success terminal conditions are only `complete_to_entry` or `complete_to_root`; `incomplete_depth_limit`, `truncated_path_budget`, and `evidence_gap` are incomplete evidence gaps. If any selected symbol has no successful path, do not claim low impact.
 
+One-layer or shallow ordinary callers are not root evidence. If Step 3 cannot confirm a business entry/root, `workflow_state.json` must keep `next_required_step` as `expand`.
+
 Step 3 is complete only when these artifacts exist:
 
 ```text
