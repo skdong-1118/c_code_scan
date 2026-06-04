@@ -1,6 +1,6 @@
 # Ripple
 
-`ripple` 是一个面向 Claude Code / AI Agent 的 C 语言回归影响评审 skill。当前分支采用“纯模型驱动”方案：agent 读取最近一次 diff，直接调用 `CodeGraph MCP`，结合源码证据进行推理，并生成中文 reviewer 风格报告。
+`ripple` 是一个面向 Claude Code / AI Agent 的 C 语言回归影响评审 skill。agent 读取最近一次 diff，直接调用 `CodeGraph MCP`，结合源码证据进行推理，并生成中文 reviewer 风格报告。
 
 硬性分析范围始终是当前分支最后一个 commit：
 
@@ -10,9 +10,9 @@ HEAD~1..HEAD
 
 不要把本 skill 用于历史 commit、多个 commit、其他分支、merge-base 范围或自定义范围。
 
-## 为什么做这个版本
+## 设计目标
 
-旧版本依赖一个较大的 Python 扫描脚本。脚本让流程更稳定，但也限制了模型对复杂 C 工程的深度推理，尤其是：
+`ripple` 重点帮助模型发现开发者可能没有意识到的业务影响流程，尤其是：
 
 - 很长的业务调用栈
 - 底层通用函数被多个上层业务入口复用
@@ -20,7 +20,7 @@ HEAD~1..HEAD
 - 对象生命周期和 pointer alias 分析
 - 大改动中需要从业务语义判断重点路径的场景
 
-这个重构分支故意移除扫描脚本，让模型承担主要分析工作。skill 只保留硬性流程、证据要求和报告格式约束。
+skill 只规定分析范围、证据要求、交互流程和报告格式；具体影响判断由模型基于 CodeGraph MCP 证据和源码语义完成。
 
 ## 当前结构
 
@@ -35,8 +35,6 @@ ripple/
     risk-rules.md
 ```
 
-这个版本没有 `ripple_scan.py` 主流程。
-
 ## 运行要求
 
 - Claude Code 或兼容的 agent 运行环境
@@ -44,7 +42,7 @@ ripple/
 - agent 可直接使用的 `CodeGraph MCP` 工具
 - 目标 C 仓库的源码读取权限
 
-这个 skill 不调用 Linux 命令行版 `codegraph`。如果环境里只有命令行 `codegraph`，但 agent 没有可用的 CodeGraph MCP 工具，则本版本无法按设计完成 Step 3。
+如果 agent 没有可用的 CodeGraph MCP 工具，则无法按设计完成 Step 3。
 
 ## 默认流程
 

@@ -25,8 +25,8 @@ HEAD~1..HEAD
 
 ## 核心规则
 
-- 本版本是纯模型驱动分析。不要运行 `ripple_scan.py`，它不是本流程的一部分。
-- 必须使用 `CodeGraph MCP` 工具。不要用 Grep、ripgrep、`rg`、shell `codegraph` 或普通文本搜索替代 CodeGraph 证据。
+- 必须使用 `CodeGraph MCP` 工具获取调用链、引用和定义证据。
+- 不要用 Grep、ripgrep、`rg` 或普通文本搜索替代 CodeGraph 证据。
 - 默认是交互式分步流程。每一步完成后停止等待确认，除非用户明确说 `直接生成报告`、`不用确认`、`全自动`、`one-shot` 或 `CI`。
 - 新分析必须从 Step 1 开始，并在读取旧产物前清空 `.impact-scan/`。只有用户明确说继续上一次分析时，才读取旧产物。
 - 默认根据最近 commit 的变更路径推断 subsystem。不要默认询问 subsystem、focus symbol、风险项或忽略路径。
@@ -179,7 +179,7 @@ git diff --unified=80 HEAD~1..HEAD -- '*.c' '*.h'
 
 ## 失败处理
 
-- 如果 CodeGraph MCP 工具不可用，停止并说明本版本无法完成 Step 3。
+- 如果 CodeGraph MCP 工具不可用，停止并说明无法完成 Step 3。
 - 如果调用栈无法到达 business entry/root，标记为 `evidence_gap`。
 - 如果 function pointer / callback 注册或触发路径无法闭合，标记为 `indirect_call_evidence_gap`。
 - 如果 `.impact-scan/risk_report.md` 缺失，任务未完成。

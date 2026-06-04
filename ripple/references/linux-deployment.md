@@ -1,6 +1,6 @@
 # Linux 内网部署说明
 
-在离线或内网 Linux 服务器上部署纯 MCP 版 `ripple` 时使用本文件。
+在离线或内网 Linux 服务器上部署 `ripple` 时使用本文件。
 
 ## 必需工具
 
@@ -8,8 +8,6 @@
 - Claude Code 或兼容的 agent 运行环境
 - 已配置给 agent 使用的 CodeGraph MCP server
 - 目标 C 仓库的源码读取权限
-
-本版本的 `ripple` 工作流不需要 Python。
 
 ## CodeGraph MCP 要求
 
@@ -52,7 +50,6 @@ git diff --unified=80 HEAD~1..HEAD -- '*.c' '*.h'
 
 ## 运行注意事项
 
-- 本版本不要依赖 shell `codegraph` 命令。
-- 不要用 `rg` 或 Grep 替代 CodeGraph 证据。
+- 不要用 `rg` 或 Grep 替代 CodeGraph MCP 证据。
 - 在 `.impact-scan/codegraph-evidence.md` 中记录实际使用的 MCP 工具名。
-- 如果 MCP 不可用，在 Step 3 前停止，并说明本版本无法完成分析。
+- 如果 MCP 不可用，在 Step 3 前停止，并说明无法完成分析。
