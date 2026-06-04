@@ -175,7 +175,7 @@ python3 .claude/skills/ripple/scripts/ripple_scan.py --step report --range HEAD~
 - `call_chain_analysis.json`：CodeGraph 深调用链证据，包含 business entry groups、branch points、上游 fan-in、下游 fan-out 和需要源码语义复核的路径。
 - `step3a_call_paths.json` 到 `step3f_completion.json`：Step 3 固化子产物，分别覆盖 call paths、business entries、branch points、state flow、evidence gaps 和 completion。
 - `workflow_state.json`：记录已完成步骤和下一步，弱模型应按 `next_required_step` 执行。
-- `risk_report.md`：最终中文 Markdown 检测报告。
+- `risk_report.md`：最终中文 Markdown 检测报告，必须包含 reviewer 风格结论和 Step 3 已分析调用栈，不能只输出抽象风险标签。
 
 `expand` 步不会默认展开所有 changed symbols，而是优先展开用户指定 symbol、高风险 symbol、public interface symbol、memory-lifetime symbol 和 pointer-alias-lifetime symbol。它会对这些 symbol 做深调用链分析，兼顾本函数内分叉、近层 caller 分叉、深层业务入口 fan-in 和下游 fan-out。这样更适合百万级仓库和慢速内网模型。
 

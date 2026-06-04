@@ -1362,6 +1362,135 @@ def unique_limited(values, limit=20):
     return result
 
 
+def call_chain_items_by_symbol(call_chain_analysis):
+    result = {}
+    for item in (call_chain_analysis or {}).get("symbols", []):
+        result[item.get("symbol", "")] = item
+    return result
+
+
+def format_plain_call_path(path):
+    return " -> ".join(path or [])
+
+
+def infer_worst_case_text(risk):
+    categories = set(risk.get("risk_categories", []))
+    kind = risk.get("kind", "")
+    if "pointer_alias_lifetime" in categories or kind == "pointer-alias-lifetime":
+        return "可能出现 use-after-free、悬空指针、double free、浅拷贝或 ownership 转移错误。"
+    if "memory_leak" in categories or kind == "memory-lifetime":
+        return "可能出现内存泄漏、错误路径未释放、重复调用后资源累积或对象生命周期失衡。"
+    if "memory_safety" in categories:
+        return "可能出现越界访问、非法内存读写、崩溃或数据破坏。"
+    if "callback_dispatch" in categories:
+        return "可能影响 callback/ops/handler table 的注册或触发路径，导致事件分发异常。"
+    if "abi_layout" in categories:
+        return "可能改变 public struct/enum/layout contract，影响老版本调用方或二进制兼容。"
+    if "error_handling" in categories:
+        return "可能改变异常路径、返回码、cleanup 顺序或上层错误处理分支。"
+    return "可能改变既有控制流、返回值、状态字段或跨 subsystem 行为。"
+
+
+def infer_validation_text(risk, call_item):
+    categories = set(risk.get("risk_categories", []))
+    checks = []
+    if call_item and call_item.get("business_entry_groups"):
+        entries = unique_limited([group.get("entry", "") for group in call_item["business_entry_groups"]], 3)
+        if entries:
+            checks.append("沿 `{}` 入口构造正向和异常输入。".format("`, `".join(entries)))
+    if "pointer_alias_lifetime" in categories:
+        checks.append("验证对象释放后是否仍被队列、链表、表项、callback opaque 或 struct field 持有。")
+    if "memory_leak" in categories or risk.get("kind") == "memory-lifetime":
+        checks.append("覆盖 allocation success/failure、early return 和 cleanup path。")
+    if "callback_dispatch" in categories:
+        checks.append("覆盖注册、注销、重复注册和触发 dispatch 场景。")
+    if not checks:
+        checks.append("覆盖修改函数的正常路径、异常路径和至少一条 legacy feature path。")
+    return " ".join(checks[:3])
+
+
+def impact_flow_text(risk, call_item, impact_paths, subsystem_analysis):
+    if call_item:
+        successful = [
+            group for group in call_item.get("business_entry_groups", [])
+            if group.get("termination_status") in ("complete_to_entry", "complete_to_root")
+        ]
+        groups = successful or call_item.get("business_entry_groups", [])
+        if groups:
+            group = groups[0]
+            path = format_plain_call_path(group.get("path", []))
+            if path:
+                return "{}（{}，depth {}）".format(
+                    path,
+                    group.get("termination_status", "evidence_gap"),
+                    group.get("depth", 0),
+                )
+    for item in impact_paths:
+        if item.get("symbol") == risk.get("subject"):
+            return "{} -> {} -> {}".format(item.get("symbol", ""), item.get("target_file", ""), item.get("subsystem", ""))
+    for item in subsystem_analysis:
+        if risk.get("subject") in item.get("symbols", []):
+            return "{} subsystem，命中 {} 条证据".format(item.get("name", ""), item.get("count", 0))
+    return "尚未闭合到明确业务入口；应视为 evidence gap，而不是低风险结论。"
+
+
+def reviewer_conclusion_lines(risks, symbols, call_chain_analysis, impact_paths, subsystem_analysis):
+    symbol_by_name = {item.get("name", ""): item for item in symbols}
+    call_by_symbol = call_chain_items_by_symbol(call_chain_analysis)
+    selected = [risk for risk in risks if risk.get("level") in ("high", "medium")][:10]
+    lines = ["", "## Reviewer 结论", ""]
+    if not selected:
+        lines.append("- 未发现 high/medium risk item；仍建议按影响路径执行 smoke regression。")
+        return lines
+    for risk in selected:
+        subject = risk.get("subject", "")
+        symbol = symbol_by_name.get(subject, {})
+        call_item = call_by_symbol.get(subject)
+        file_path = ", ".join(risk.get("files", [])[:3]) or symbol.get("file", "unknown file")
+        reasons = "; ".join(risk.get("reasons", [])[:4]) or "命中风险规则但缺少详细 reason"
+        lines.append("### `{}`".format(subject))
+        lines.append("- 改动点：`{}` 位于 `{}`，类型为 `{}`，风险等级 `{}`，score {}。".format(
+            subject,
+            file_path,
+            risk.get("kind", ""),
+            risk.get("level", ""),
+            risk.get("score", 0),
+        ))
+        lines.append("- 风险原因：{}。".format(reasons))
+        lines.append("- 影响流程：{}。".format(impact_flow_text(risk, call_item, impact_paths, subsystem_analysis)))
+        lines.append("- 最坏结果：{}".format(infer_worst_case_text(risk)))
+        lines.append("- 验证建议：{}".format(infer_validation_text(risk, call_item)))
+        lines.append("")
+    return lines
+
+
+def analyzed_call_stack_lines(call_chain_analysis):
+    lines = ["", "## 已分析调用栈", ""]
+    symbols = (call_chain_analysis or {}).get("symbols", [])
+    if not symbols:
+        lines.append("- Step 3 未产生调用栈证据；这属于 evidence gap，不能据此判断低风险。")
+        return lines
+    for item in symbols[:20]:
+        lines.append("### `{}`".format(item.get("symbol", "")))
+        groups = item.get("business_entry_groups", [])
+        if not groups:
+            lines.append("- 未找到 caller path；需要继续用 CodeGraph 或源码证据补齐。")
+            continue
+        for group in groups[:12]:
+            path = format_plain_call_path(group.get("path", [])) or "(empty path)"
+            lines.append(
+                "- {} | status `{}` | depth {} | entry `{}` | {}".format(
+                    path,
+                    group.get("termination_status", "evidence_gap"),
+                    group.get("depth", 0),
+                    group.get("entry", ""),
+                    "legacy" if group.get("legacy_hit") else "non-legacy",
+                )
+            )
+        lines.append("")
+    return lines
+
+
 def checks_for_categories(categories, legacy_hit):
     checks = []
     if legacy_hit:
@@ -1640,12 +1769,15 @@ def markdown_report(
         "- CodeGraph 层：用于查找 function/symbol reference、callers/callees、include/import 关系和 subsystem 影响面；局部变量改动会先归属到 enclosing function，再用该函数做 CodeGraph 扩展。",
         "- Heuristic 层：根据函数、路径、diff 内容、risk category、对象类型、字段访问和逃逸点识别风险信号；这些结论是 risk triage，不是完整 data-flow proof。",
         "- 生命周期证据层：记录 heap allocation、container insert/remove、callback opaque、struct field escape、error cleanup path 等对象生命周期证据，辅助定位泄漏、UAF、double free 和 ownership 转移风险。",
+    ]
+    lines.extend(reviewer_conclusion_lines(risks, symbols, call_chain_analysis, impact_paths, subsystem_analysis))
+    lines.extend([
         "",
         "## 高/中风险项",
         "",
         "| Subject | Kind | Score | Level | Reasons |",
         "|---|---|---:|---|---|",
-    ]
+    ])
     for item in risks[:30]:
         if item["level"] == "low":
             continue
@@ -1733,6 +1865,7 @@ def markdown_report(
         lines.append("- 未发现 symbol-to-file impact path。")
 
     call_chain_analysis = call_chain_analysis or {"symbols": []}
+    lines.extend(analyzed_call_stack_lines(call_chain_analysis))
     lines.extend(["", "## 深调用链证据（Deep Call-Chain Evidence）", ""])
     if call_chain_analysis.get("symbols"):
         for item in call_chain_analysis["symbols"][:20]:

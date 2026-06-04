@@ -9,11 +9,13 @@ The final report must be Chinese Markdown. Professional technical terms may rema
 - 概要
 - 用户重点关注覆盖
 - 分析分层
+- Reviewer 结论
 - 高/中风险项
 - 架构风险类别
 - 受影响 subsystem 候选
 - Reference Evidence
 - Impact Paths
+- 已分析调用栈
 - Deep Call-Chain Evidence
 - 生命周期风险证据
 - 内存泄漏关注点
@@ -22,6 +24,18 @@ The final report must be Chinese Markdown. Professional technical terms may rema
 - 局限性
 
 Do not include the removed mandatory-review section.
+
+## Reviewer Conclusions
+
+For every high/medium risk item, write a concrete reviewer-style conclusion in Chinese. Each item must answer:
+
+- 改动点: changed subject, file, kind, score.
+- 风险原因: evidence-backed reason, not only a category label.
+- 影响流程: the analyzed call stack, business entry, subsystem, or evidence gap.
+- 最坏结果: concrete failure mode such as UAF, leak, wrong dispatch, ABI break, or error-path regression.
+- 验证建议: scenario-level regression check tied to the affected path.
+
+Avoid abstract-only wording such as `检测到 pointer_alias_lifetime 风险` without explaining the object/path/story.
 
 ## Layer Wording
 
@@ -35,6 +49,8 @@ Use these layer meanings:
 Step 4 must reference `.impact-scan/step3f_completion.json`. If it is missing or `step3_complete` is not true, the final report is premature.
 
 Call-chain analysis must target the top-level business entry or root caller, not a fixed depth. Depth is only a CodeGraph search budget. Only `complete_to_entry` and `complete_to_root` are successful terminal statuses; `incomplete_depth_limit`, `truncated_path_budget`, and `evidence_gap` are unresolved evidence gaps, not proof of low impact.
+
+The report must include the analyzed call stacks from `.impact-scan/call_chain_analysis.json`, including path, entry, depth, legacy marker, and termination status. Do not hide incomplete paths; label them as evidence gaps.
 
 ## Confidence
 

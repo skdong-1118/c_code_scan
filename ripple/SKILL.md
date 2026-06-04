@@ -130,7 +130,7 @@ python3 ripple/scripts/ripple_scan.py --step report --range HEAD~1..HEAD --codeg
 
 Before Step 4, verify `.impact-scan/step3f_completion.json` exists and has `step3_complete: true`. If missing or incomplete, finish Step 3 first; do not generate a final report.
 
-Verify `.impact-scan/risk_report.md` exists, then summarize it briefly for the user. The final report must be written in Chinese; professional terms such as `CodeGraph`, `business entry groups`, `fan-in`, `fan-out`, `legacy path`, `callback`, `ABI`, `memory-lifetime`, and `evidence gap` may remain in English. For report sections and wording, read `references/report-format.md` when needed.
+Verify `.impact-scan/risk_report.md` exists, then summarize it briefly for the user. The final report must be written in Chinese; professional terms such as `CodeGraph`, `business entry groups`, `fan-in`, `fan-out`, `legacy path`, `callback`, `ABI`, `memory-lifetime`, and `evidence gap` may remain in English. It must include reviewer-style conclusions and the analyzed call stacks from Step 3, not only abstract risk labels. For report sections and wording, read `references/report-format.md` when needed.
 
 ## One-Shot Mode
 

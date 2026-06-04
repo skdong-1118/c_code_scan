@@ -234,6 +234,77 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("Heuristic 层", report)
         self.assertIn("生命周期证据层", report)
 
+    def test_markdown_report_includes_reviewer_conclusions_and_analyzed_call_stacks(self):
+        config = scan.default_scan_config("fosip/nbm")
+        symbol = scan.changed_symbol(
+            "compare_nodeset_to_other",
+            "fosip/nbm/xpath1.c",
+            "local-function-context",
+            "val_free_value(conval); dlq_enque(conval, queue);",
+        )
+        risk = scan.risk_item(
+            symbol["name"],
+            symbol["kind"],
+            14,
+            [
+                "pointer alias/lifetime evidence from local function body",
+                "error handling/lifetime related change",
+            ],
+            [symbol["file"]],
+            ["pointer_alias_lifetime", "error_handling"],
+        )
+        call_chain_analysis = {
+            "symbols": [
+                {
+                    "symbol": symbol["name"],
+                    "max_depth": 15,
+                    "branch_points": [
+                        {
+                            "kind": "local-control-flow",
+                            "node": symbol["name"],
+                            "reason": "changed evidence contains error/lifetime branch signal",
+                        }
+                    ],
+                    "business_entry_groups": [
+                        {
+                            "entry": "nbm_xpath_dispatch",
+                            "path": ["nbm_xpath_dispatch", "xpath_eval", symbol["name"]],
+                            "depth": 2,
+                            "legacy_hit": True,
+                            "termination_status": "complete_to_entry",
+                        }
+                    ],
+                    "analysis_questions": [],
+                }
+            ]
+        }
+
+        report = scan.markdown_report(
+            "HEAD~1..HEAD",
+            scan.codegraph_status("off"),
+            [{"path": symbol["file"], "status": "M"}],
+            [symbol],
+            [],
+            [risk],
+            {"subsystems": []},
+            config,
+            [],
+            scan.build_architecture_risk_summary([risk]),
+            [],
+            call_chain_analysis,
+        )
+
+        self.assertIn("## Reviewer 结论", report)
+        self.assertIn("改动点", report)
+        self.assertIn("风险原因", report)
+        self.assertIn("影响流程", report)
+        self.assertIn("最坏结果", report)
+        self.assertIn("验证建议", report)
+        self.assertIn("compare_nodeset_to_other", report)
+        self.assertIn("## 已分析调用栈", report)
+        self.assertIn("nbm_xpath_dispatch -> xpath_eval -> compare_nodeset_to_other", report)
+        self.assertIn("complete_to_entry", report)
+
     def test_detects_architecture_risk_categories_from_c_evidence(self):
         cases = {
             "memory_safety": "memcpy(dst, src, len + 1);",
