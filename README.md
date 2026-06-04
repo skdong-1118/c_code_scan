@@ -1,28 +1,28 @@
 # Ripple
 
-`ripple` is a Claude Code skill for C regression impact review. It is now a pure model-driven workflow: the agent reads the latest diff, uses CodeGraph MCP tools directly, reasons over source evidence, and writes a Chinese reviewer-style report.
+`ripple` 是一个面向 Claude Code / AI Agent 的 C 语言回归影响评审 skill。当前分支采用“纯模型驱动”方案：agent 读取最近一次 diff，直接调用 `CodeGraph MCP`，结合源码证据进行推理，并生成中文 reviewer 风格报告。
 
-The hard scope is always the current branch latest commit:
+硬性分析范围始终是当前分支最后一个 commit：
 
 ```text
 HEAD~1..HEAD
 ```
 
-Do not use this skill for older commits, multiple commits, other branches, merge-base ranges, or custom ranges.
+不要把本 skill 用于历史 commit、多个 commit、其他分支、merge-base 范围或自定义范围。
 
-## Why This Version Exists
+## 为什么做这个版本
 
-The previous implementation used a large Python scanner. That made the flow stable, but it also constrained deep reasoning, especially for:
+旧版本依赖一个较大的 Python 扫描脚本。脚本让流程更稳定，但也限制了模型对复杂 C 工程的深度推理，尤其是：
 
-- long business call chains
-- shared low-level functions with many upstream entries
-- function pointer, callback, ops table, and registration paths
-- object lifetime and pointer alias analysis
-- large diffs where the important path is not obvious from a fixed heuristic
+- 很长的业务调用栈
+- 底层通用函数被多个上层业务入口复用
+- function pointer、callback、ops table、注册表路径
+- 对象生命周期和 pointer alias 分析
+- 大改动中需要从业务语义判断重点路径的场景
 
-This refactor intentionally removes the scanner and lets the model do the analysis. The skill keeps only hard workflow rules, evidence requirements, and report format constraints.
+这个重构分支故意移除扫描脚本，让模型承担主要分析工作。skill 只保留硬性流程、证据要求和报告格式约束。
 
-## Current Architecture
+## 当前结构
 
 ```text
 ripple/
@@ -35,34 +35,34 @@ ripple/
     risk-rules.md
 ```
 
-There is no `ripple_scan.py` workflow in this version.
+这个版本没有 `ripple_scan.py` 主流程。
 
-## Required Runtime
+## 运行要求
 
-- Claude Code or a compatible agent runtime
+- Claude Code 或兼容的 agent 运行环境
 - Git
-- CodeGraph MCP tools exposed to the agent
-- Read access to the target C repository
+- agent 可直接使用的 `CodeGraph MCP` 工具
+- 目标 C 仓库的源码读取权限
 
-The skill does not call a Linux `codegraph` CLI. If only a command-line CodeGraph binary is available and no MCP tools are exposed to the agent, this version cannot complete Step 3 as designed.
+这个 skill 不调用 Linux 命令行版 `codegraph`。如果环境里只有命令行 `codegraph`，但 agent 没有可用的 CodeGraph MCP 工具，则本版本无法按设计完成 Step 3。
 
-## Default Workflow
+## 默认流程
 
-Default mode is interactive. A new analysis starts from Step 1 and clears previous `.impact-scan` artifacts before reading any old workflow notes.
+默认是交互式流程。每次新分析从 Step 1 开始，并在读取旧产物前清空 `.impact-scan`。
 
 ```text
-Step 1: Scope discovery
-Step 2: Risk framing
-Step 3: CodeGraph MCP deep dive
-Step 4: Source reasoning
-Step 5: Final report
+Step 1：Scope discovery，发现本次变更范围
+Step 2：Risk framing，建立风险假设
+Step 3：CodeGraph MCP 深挖，深入调用链和引用证据
+Step 4：Source reasoning，结合源码做语义推理
+Step 5：Final report，生成最终中文报告
 ```
 
-Only skip confirmations when the user explicitly asks for full-auto, one-shot, CI, or no-confirmation behavior.
+只有当用户明确要求 `直接生成报告`、`不用确认`、`全自动`、`one-shot` 或 `CI` 时，才跳过中间确认。
 
-## Output Artifacts
+## 输出产物
 
-All artifacts are Markdown so the model can read and revise them directly:
+所有产物都使用 Markdown，方便模型直接读取、修订和引用：
 
 ```text
 .impact-scan/scope.md
@@ -72,28 +72,26 @@ All artifacts are Markdown so the model can read and revise them directly:
 .impact-scan/risk_report.md
 ```
 
-Terminal summaries are not completion. The final deliverable is always:
+终端总结不算完成。最终交付始终是：
 
 ```text
 .impact-scan/risk_report.md
 ```
 
-## Analysis Requirements
+## 分析要求
 
-The agent must:
+agent 必须：
 
-- inspect only `HEAD~1..HEAD`
-- infer subsystem from changed paths instead of asking first
-- use CodeGraph MCP for references, callers, callees, call chains, and definitions
-- keep expanding call chains until reaching a top-level business entry/root or recording an evidence gap
-- treat one-layer ordinary callers as incomplete evidence
-- analyze function pointer/callback paths through registration, storage, indirect call site, and trigger entry when MCP supports those queries
-- explain object lifecycle for heap objects, containers, callback opaque data, pointer fields, and error cleanup paths
-- write reviewer-style conclusions, not just risk labels
+- 只检查 `HEAD~1..HEAD`
+- 根据变更路径自动推断 subsystem，不默认询问用户
+- 使用 `CodeGraph MCP` 查询 definition、references、callers、callees、callchain
+- 持续展开调用链，直到到达顶层业务入口/root，或者明确记录 `evidence_gap`
+- 不把一层普通 caller 当成 root 证据
+- 对 function pointer / callback 路径分析 registration、storage owner、indirect call site 和 trigger entry
+- 对 heap object、container、callback opaque、指针字段和 error cleanup path 说明对象生命周期
+- 写 reviewer 风格结论，不只输出风险标签
 
-## Risk Categories
-
-Enabled default categories:
+## 默认风险项
 
 ```text
 memory_leak
@@ -104,13 +102,13 @@ error_handling
 callback_dispatch
 ```
 
-Target systems are single-threaded. Do not add threading, multiprocess, or execution-model review sections.
+目标系统按单线程模型处理。不要增加多线程、多进程或执行模型评审章节。
 
-## Final Report
+## 最终报告
 
-The final report must be Chinese Markdown. Professional terms such as `CodeGraph`, `business entry`, `fan-in`, `fan-out`, `callback`, `ABI`, `memory-lifetime`, and `evidence gap` may remain in English.
+最终报告必须是中文 Markdown。必要的专业术语可以保留英文，例如 `CodeGraph`、`business entry`、`fan-in`、`fan-out`、`callback`、`ABI`、`memory-lifetime`、`evidence gap`。
 
-For each high/medium risk item, the report must answer:
+每个 high/medium 风险项都必须回答：
 
 - 改动点
 - 风险原因
@@ -118,4 +116,4 @@ For each high/medium risk item, the report must answer:
 - 最坏结果
 - 验证建议
 
-It must include analyzed call stacks and unresolved evidence gaps. Do not claim low impact from missing evidence.
+报告必须包含已分析调用栈和未解决的 evidence gap。不能把缺少证据解释成低风险。

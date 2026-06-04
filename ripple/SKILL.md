@@ -1,39 +1,39 @@
 ---
 name: ripple
-description: Use when reviewing whether the current branch latest C commit can regress existing behavior, legacy flows, public interfaces, memory/lifetime safety, ABI/layout, error handling, pointer aliasing, callback dispatch, or subsystem behavior. Requires CodeGraph MCP tools and source-level reasoning.
+description: 用于评审当前分支最后一次 C 代码提交是否可能影响已有功能、老功能流程、公共接口、内存/生命周期安全、ABI/layout、错误处理、指针别名、callback 分发或 subsystem 行为；需要 CodeGraph MCP 和源码语义推理。
 ---
 
-# Ripple C Regression Review
+# Ripple C 回归影响评审
 
-## Scope
+## 分析范围
 
-Analyze only the current branch latest commit:
+只分析当前分支最后一个 commit：
 
 ```text
 HEAD~1..HEAD
 ```
 
-Do not analyze older commits, multiple commits, other branches, merge-base ranges, or custom ranges. If the user asks for another range, stop and explain that `ripple` is intentionally limited to the latest commit.
+不要分析历史 commit、多个 commit、其他分支、merge-base 范围或自定义范围。如果用户要求其他范围，停止并说明 `ripple` 被故意限制为只分析最近一次提交。
 
-The final deliverable is always:
+最终交付始终是：
 
 ```text
 .impact-scan/risk_report.md
 ```
 
-Terminal or chat summaries are not completion.
+终端总结或对话总结不算完成。
 
-## Core Rules
+## 核心规则
 
-- This version is pure model-driven analysis. Do not run `ripple_scan.py`; it is not part of this workflow.
-- Require CodeGraph MCP tools. Do not use Grep, ripgrep, `rg`, shell `codegraph`, or text search as a substitute for CodeGraph evidence.
-- Default mode is interactive guided mode. Stop after each step unless the user clearly asks for `直接生成报告`, `不用确认`, `全自动`, `one-shot`, or `CI`.
-- New analysis requests always start at Step 1 and clear `.impact-scan/` before reading old artifacts. Continue old artifacts only when the user explicitly says to continue the previous analysis.
-- Infer subsystem from latest-commit changed paths. Do not ask for subsystem, focus symbols, risk categories, or ignored paths by default.
-- Target systems are single-threaded. Do not add threading, multiprocess, or execution-model review sections.
-- Every step must write its required Markdown artifact. Reasoning in chat is not step completion.
+- 本版本是纯模型驱动分析。不要运行 `ripple_scan.py`，它不是本流程的一部分。
+- 必须使用 `CodeGraph MCP` 工具。不要用 Grep、ripgrep、`rg`、shell `codegraph` 或普通文本搜索替代 CodeGraph 证据。
+- 默认是交互式分步流程。每一步完成后停止等待确认，除非用户明确说 `直接生成报告`、`不用确认`、`全自动`、`one-shot` 或 `CI`。
+- 新分析必须从 Step 1 开始，并在读取旧产物前清空 `.impact-scan/`。只有用户明确说继续上一次分析时，才读取旧产物。
+- 默认根据最近 commit 的变更路径推断 subsystem。不要默认询问 subsystem、focus symbol、风险项或忽略路径。
+- 目标系统按单线程模型处理。不要增加多线程、多进程或执行模型评审章节。
+- 每一步必须写出对应 Markdown 产物。只在聊天中推理不算该步骤完成。
 
-## Artifacts
+## 产物
 
 ```text
 .impact-scan/scope.md
@@ -43,28 +43,28 @@ Terminal or chat summaries are not completion.
 .impact-scan/risk_report.md
 ```
 
-## Interactive Workflow
+## 交互式流程
 
-Do not run all steps in one uninterrupted sequence in guided mode.
+交互模式下，不要一口气跑完所有步骤。
 
 ```text
-Step 1: Scope discovery
-Step 2: Risk framing
-Step 3: CodeGraph MCP deep dive
-Step 4: Source reasoning
-Step 5: Final report
+Step 1：Scope discovery，发现变更范围
+Step 2：Risk framing，建立风险假设
+Step 3：CodeGraph MCP 深挖，深入调用链和引用证据
+Step 4：Source reasoning，结合源码做语义推理
+Step 5：Final report，生成最终报告
 ```
 
-### Step 1: Scope Discovery
+### Step 1：范围发现
 
-Start by clearing stale artifacts:
+先清理旧产物：
 
 ```bash
 mkdir -p .impact-scan
 find .impact-scan -mindepth 1 -maxdepth 1 -type f -delete
 ```
 
-Then inspect only:
+然后只检查：
 
 ```bash
 git diff --name-status HEAD~1..HEAD
@@ -72,37 +72,37 @@ git diff --stat HEAD~1..HEAD
 git diff --unified=80 HEAD~1..HEAD -- '*.c' '*.h'
 ```
 
-Write `.impact-scan/scope.md` with:
+写入 `.impact-scan/scope.md`，内容包括：
 
 - commit range
 - changed files
-- inferred subsystem paths
-- changed C/header files
-- large or public-interface-looking files
-- any ambiguity that needs user confirmation
+- 推断出的 subsystem 路径
+- 变更的 C/header 文件
+- 看起来像大改动或 public interface 的文件
+- 需要用户确认的歧义点
 
-Stop and ask whether the scope looks right.
+停止并询问用户 scope 是否正确。
 
-### Step 2: Risk Framing
+### Step 2：风险建模
 
-Read `references/risk-rules.md`.
+阅读 `references/risk-rules.md`。
 
-Map diff hunks to changed functions/types. If a local variable, field, heap object, container operation, or callback-related line changed, map it to the enclosing function. Do not treat local names such as `ret`, `tmp`, `ctx`, `flag`, or `state` as CodeGraph query subjects.
+把 diff hunk 映射到被修改的函数或类型。如果改动只涉及局部变量、字段、heap object、container 操作或 callback 相关语句，要映射到 enclosing function。不要把 `ret`、`tmp`、`ctx`、`flag`、`state` 这类局部名字当成 CodeGraph 查询对象。
 
-Write `.impact-scan/risk-framing.md` with:
+写入 `.impact-scan/risk-framing.md`，内容包括：
 
-- changed subjects to investigate
-- risk categories: `memory_leak`, `memory_safety`, `abi_layout`, `pointer_alias_lifetime`, `error_handling`, `callback_dispatch`
-- why each subject matters
-- CodeGraph MCP query plan for Step 3
+- 需要调查的 changed subjects
+- 风险分类：`memory_leak`、`memory_safety`、`abi_layout`、`pointer_alias_lifetime`、`error_handling`、`callback_dispatch`
+- 每个 subject 为什么值得关注
+- Step 3 的 CodeGraph MCP 查询计划
 
-Stop and ask whether to continue to CodeGraph deep dive.
+停止并询问是否继续进入 CodeGraph 深挖。
 
-### Step 3: CodeGraph MCP Deep Dive
+### Step 3：CodeGraph MCP 深挖
 
-Read `references/codegraph-mcp-checklist.md`.
+阅读 `references/codegraph-mcp-checklist.md`。
 
-For every selected subject, use CodeGraph MCP tools for:
+对每个 selected subject，使用 CodeGraph MCP 查询：
 
 - definition
 - references
@@ -110,64 +110,64 @@ For every selected subject, use CodeGraph MCP tools for:
 - callees
 - call chain paths
 
-For callback/function pointer risks, also use any available MCP capability for:
+对于 callback / function pointer 风险，还要使用环境中可用的 MCP 能力查询：
 
 - address-taken references
 - registration sites
-- handler/ops/callback table assignments
+- handler / ops / callback table assignments
 - indirect call sites
 - trigger entry paths
 
-Do not stop because one caller was found. Continue caller expansion until the path reaches a top-level business entry/root, or record an evidence gap. One-layer ordinary callers are not root evidence.
+不要因为找到一个 caller 就停止。必须继续展开 caller，直到到达顶层 business entry/root，或者明确记录 evidence gap。一层普通 caller 不是 root 证据。
 
-Write `.impact-scan/codegraph-evidence.md` with:
+写入 `.impact-scan/codegraph-evidence.md`，内容包括：
 
-- every MCP query performed
-- raw result summary
-- analyzed call stacks
-- business entry/root status
-- branch points and fan-in/fan-out
-- function pointer/callback registration and trigger evidence
-- unresolved evidence gaps
+- 已执行的每个 MCP 查询
+- 原始结果摘要
+- 已分析调用栈
+- business entry/root 状态
+- branch points 和 fan-in/fan-out
+- function pointer / callback 注册与触发证据
+- 未解决的 evidence gaps
 
-Stop and ask whether to continue to source reasoning.
+停止并询问是否继续做源码语义推理。
 
-### Step 4: Source Reasoning
+### Step 4：源码语义推理
 
-Read the changed functions and the important functions found in Step 3. Use CodeGraph evidence to guide source reading.
+阅读变更函数，以及 Step 3 中发现的重要函数。用 CodeGraph 证据指导源码阅读。
 
-Write `.impact-scan/source-reasoning.md` with:
+写入 `.impact-scan/source-reasoning.md`，内容包括：
 
-- object/data lifecycle story
-- error path and cleanup behavior
-- pointer alias and ownership transfer
-- callback/function pointer registration and trigger behavior
-- how upstream callers consume return values, state changes, side effects, and errors
-- evidence gaps that remain unresolved
+- object / data lifecycle 故事线
+- error path 和 cleanup 行为
+- pointer alias 和 ownership transfer
+- callback / function pointer 注册与触发行为
+- 上游 caller 如何消费返回值、状态变化、副作用和错误码
+- 仍未解决的 evidence gaps
 
-Do not claim low impact from missing evidence.
+不要从缺少证据推出低风险结论。
 
-Stop and ask whether to generate the final report.
+停止并询问是否生成最终报告。
 
-### Step 5: Final Report
+### Step 5：最终报告
 
-Read `references/report-format.md`.
+阅读 `references/report-format.md`。
 
-Generate `.impact-scan/risk_report.md` in Chinese Markdown. It must include:
+生成 `.impact-scan/risk_report.md`，使用中文 Markdown。报告必须包含：
 
-- summary
-- analysis layers
-- reviewer-style conclusions
-- high/medium risk items
-- affected subsystem/business flows
+- 概要
+- 分析分层
+- reviewer 风格结论
+- 高/中风险项
+- 受影响 subsystem / 业务流程
 - reference evidence
-- analyzed call stacks
-- lifecycle reasoning
+- 已分析调用栈
+- 生命周期推理
 - evidence gaps
-- concrete regression checks
-- limitations
+- 具体验证建议
+- 局限性
 
-For every high/medium risk item, answer:
+每个 high/medium 风险项都必须回答：
 
 - 改动点
 - 风险原因
@@ -175,18 +175,18 @@ For every high/medium risk item, answer:
 - 最坏结果
 - 验证建议
 
-Verify the file exists, then briefly summarize it for the user.
+确认 `.impact-scan/risk_report.md` 存在后，再简要向用户总结。
 
-## Failure Handling
+## 失败处理
 
-- If CodeGraph MCP tools are unavailable, stop and say this version cannot complete Step 3.
-- If a call stack cannot reach a business entry/root, label it as `evidence_gap`.
-- If function pointer/callback registration or trigger paths cannot be resolved, label them as `indirect_call_evidence_gap`.
-- If `.impact-scan/risk_report.md` is missing, the task is not complete.
+- 如果 CodeGraph MCP 工具不可用，停止并说明本版本无法完成 Step 3。
+- 如果调用栈无法到达 business entry/root，标记为 `evidence_gap`。
+- 如果 function pointer / callback 注册或触发路径无法闭合，标记为 `indirect_call_evidence_gap`。
+- 如果 `.impact-scan/risk_report.md` 缺失，任务未完成。
 
-## References
+## 参考文件
 
-- `references/codegraph-mcp-checklist.md`: required MCP query checklist.
-- `references/risk-rules.md`: risk categories and C reasoning guidance.
-- `references/report-format.md`: final report format and style.
-- `references/linux-deployment.md`: MCP deployment expectations.
+- `references/codegraph-mcp-checklist.md`：必须执行的 MCP 查询检查清单。
+- `references/risk-rules.md`：风险分类和 C 语言推理规则。
+- `references/report-format.md`：最终报告格式和写作风格。
+- `references/linux-deployment.md`：MCP 部署要求。

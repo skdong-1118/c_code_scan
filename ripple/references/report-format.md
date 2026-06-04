@@ -1,10 +1,10 @@
-# Report Format Reference
+# 报告格式参考
 
-Use this reference when generating `.impact-scan/risk_report.md`.
+生成 `.impact-scan/risk_report.md` 时使用本文件。
 
-The final report must be Chinese Markdown. Professional technical terms may remain in English.
+最终报告必须是中文 Markdown。必要的专业术语可以保留英文。
 
-## Required Sections
+## 必需章节
 
 ```text
 概要
@@ -21,59 +21,59 @@ Evidence Gaps
 局限性
 ```
 
-Do not include a mandatory manual-review section. The report itself is the review.
+不要加入“必须人工 review”这类独立章节。报告本身就是 review 结论。
 
-## Reviewer Conclusions
+## Reviewer 结论
 
-For every high/medium risk item, write a concrete reviewer-style conclusion. Each item must answer:
+对每个 high/medium 风险项，都要写具体的 reviewer 风格结论。每项必须回答：
 
-- 改动点: what changed and where.
-- 风险原因: why the evidence suggests risk.
-- 影响流程: analyzed business flow, call stack, subsystem, or evidence gap.
-- 最坏结果: concrete failure mode such as UAF, leak, wrong dispatch, ABI break, or error-path regression.
-- 验证建议: scenario-level regression check tied to the affected path.
+- 改动点：改了什么，在哪个文件 / 函数 / 类型。
+- 风险原因：为什么这些证据指向风险，不要只写风险分类名。
+- 影响流程：已分析的业务流程、调用栈、subsystem，或明确的 evidence gap。
+- 最坏结果：具体失败模式，例如 UAF、leak、错误 dispatch、ABI 破坏、error path regression。
+- 验证建议：和受影响路径绑定的具体回归验证场景。
 
-Avoid abstract-only wording such as:
+避免只写抽象句子，例如：
 
 ```text
 检测到 pointer_alias_lifetime 风险。
 ```
 
-Prefer:
+优先写成：
 
 ```text
 对象被释放后仍可能被 queue/list/callback 持有；如果上层业务入口继续消费该对象，可能产生 UAF 或悬空指针。
 ```
 
-## Analysis Layers
+## 分析分层
 
-- CodeGraph MCP 层: definition, references, callers, callees, callchain, registration, indirect call evidence.
-- Source reasoning 层: source-level interpretation of branches, object ownership, error paths, and return-value consumers.
-- Heuristic risk 层: risk categories inferred from diff content, paths, public headers, callbacks, memory operations, ABI/layout changes, and lifecycle signals.
-- Evidence gap 层: unresolved paths that must not be treated as low risk.
+- CodeGraph MCP 层：definition、references、callers、callees、callchain、registration、indirect call evidence。
+- Source reasoning 层：结合源码解释 branch、object ownership、error path、return-value consumer。
+- Heuristic risk 层：根据 diff 内容、路径、public header、callback、memory 操作、ABI/layout 变化和 lifecycle 信号推断风险分类。
+- Evidence gap 层：未闭合路径必须显式记录，不能当作低风险。
 
-## Call Stack Reporting
+## 调用栈报告要求
 
-The report must include analyzed call stacks from `.impact-scan/codegraph-evidence.md`.
+报告必须包含 `.impact-scan/codegraph-evidence.md` 中已经分析过的调用栈。
 
-For each path include:
+每条 path 包含：
 
 ```text
 path
 entry/root status
-depth or qualitative length
-legacy/non-legacy marker when known
-evidence gap when unresolved
+depth 或定性长度
+legacy/non-legacy 标记，若能判断
+未闭合时的 evidence gap
 ```
 
-Successful statuses:
+成功状态：
 
 ```text
 complete_to_entry
 complete_to_root
 ```
 
-Incomplete statuses:
+未完成状态：
 
 ```text
 evidence_gap
@@ -81,11 +81,11 @@ indirect_call_evidence_gap
 path_explosion_gap
 ```
 
-One-layer ordinary callers are not root evidence.
+一层普通 caller 不是 root 证据。
 
-## Function Pointer and Callback Reporting
+## Function Pointer 与 Callback 报告要求
 
-If a changed function may be called through a function pointer, ops table, handler table, callback, or registration API, include:
+如果 changed function 可能通过 function pointer、ops table、handler table、callback 或 registration API 被调用，必须包含：
 
 - registration site
 - storage owner
@@ -93,20 +93,20 @@ If a changed function may be called through a function pointer, ops table, handl
 - trigger entry
 - unresolved gaps
 
-If only registration is found, do not call the path complete.
+如果只找到了 registration，不要把路径判断为 complete。
 
-## Confidence
+## 置信度
 
-Confidence is high only when CodeGraph MCP evidence and source reasoning agree.
+只有当 CodeGraph MCP 证据和源码语义推理互相印证时，置信度才可以写 high。
 
-Phrase limitations plainly:
+局限性要直接写清楚：
 
 - `这是 regression risk review，不是 compatibility proof。`
 - `function pointer 和 callback paths 依赖 CodeGraph MCP 能力。`
 - `未闭合调用栈是 evidence gap，不是低风险证明。`
 
-## Style
+## 写作风格
 
-- Use evidence-backed language: `可能影响`, `建议验证`, `证据显示`.
-- Avoid claiming a change is safe.
-- Keep the report readable for C reviewers. Prefer concrete object/path stories over category lists.
+- 使用证据驱动的表达：`可能影响`、`建议验证`、`证据显示`。
+- 避免声称变更是安全的。
+- 报告要让 C reviewer 容易读懂。优先写具体对象 / 路径故事，不要只罗列风险分类。

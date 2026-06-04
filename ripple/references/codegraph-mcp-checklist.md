@@ -1,10 +1,10 @@
-# CodeGraph MCP Checklist
+# CodeGraph MCP 检查清单
 
-Use this reference during Step 3. The goal is to make model reasoning evidence-driven while still letting the model decide what the evidence means.
+Step 3 使用本文件。目标是让模型推理建立在证据上，同时保留模型对证据含义的判断空间。
 
-## Required Query Set
+## 必查证据类型
 
-For every selected changed subject, call CodeGraph MCP tools for these evidence types when available:
+对每个 selected changed subject，在环境支持时调用 CodeGraph MCP 查询以下证据：
 
 ```text
 definition
@@ -14,60 +14,60 @@ callees
 callchain
 ```
 
-The exact MCP tool names depend on the local CodeGraph server. Use the closest available tool and record the actual tool name in `.impact-scan/codegraph-evidence.md`.
+不同内网 CodeGraph MCP server 暴露的工具名可能不同。使用语义最接近的 MCP 工具，并把实际工具名记录到 `.impact-scan/codegraph-evidence.md`。
 
-## Minimum Evidence Per Subject
+## 每个 subject 的最小证据
 
-For each subject, record:
+每个 subject 至少记录：
 
-- subject name and file
-- definition location
-- reference files/functions
+- subject 名称和文件路径
+- definition 位置
+- reference 文件 / 函数
 - direct callers
 - direct callees
 - call-chain paths
-- whether each path reached `complete_to_entry`, `complete_to_root`, or an evidence gap
+- 每条 path 是否到达 `complete_to_entry`、`complete_to_root`，或者只能标记 evidence gap
 
-## Call-Chain Expansion Rule
+## 调用链展开规则
 
-Do not stop at the first caller.
+不要停在第一个 caller。
 
-Continue expanding callers until one of these is true:
+持续展开 callers，直到满足以下条件之一：
 
-- a top-level business entry is reached
-- a root/dispatch/service/main/task/event entry is reached
-- the MCP tool cannot return more evidence
-- path explosion makes the result unreadable
+- 到达顶层 business entry
+- 到达 root / dispatch / service / main / task / event 入口
+- MCP 工具无法返回更多证据
+- path explosion 导致结果不可读
 
-If expansion stops before an entry/root, record `evidence_gap`. Missing evidence is not low risk.
+如果在到达 entry/root 前停止，记录为 `evidence_gap`。缺少证据不是低风险。
 
-## Branch and Shared-Flow Rule
+## 分叉与共享流程规则
 
-For changed low-level/common functions, explicitly look for:
+对底层公共函数或 common flow，必须显式关注：
 
-- branch points inside the changed function
-- near callers that share the function directly
-- deeper upstream fan-in where business flows split many wrappers above
-- downstream fan-out into state, queue, callback, lifecycle, or error helpers
+- changed function 内部的 branch points
+- 直接共享该函数的近层 callers
+- 多层 wrapper 之上才分叉的深层 upstream fan-in
+- 进入 state、queue、callback、lifecycle、error helper 的 downstream fan-out
 
-## Function Pointer and Callback Rule
+## Function Pointer 与 Callback 规则
 
-For `callback_dispatch` or `pointer_alias_lifetime` risks, ordinary caller chains are not enough.
+对于 `callback_dispatch` 或 `pointer_alias_lifetime` 风险，普通 caller chain 不够。
 
-Also look for:
+还要查：
 
-- address-taken references: `func`, `&func`
-- assignments into ops/handler/callback tables
+- address-taken references：`func`、`&func`
+- ops / handler / callback table 赋值
 - registration APIs
-- storage owner: global table, struct field, queue/list node, context object
+- storage owner：global table、struct field、queue/list node、context object
 - indirect call sites
 - trigger business entry
 
-If registration is found but trigger path is not found, record `indirect_call_evidence_gap`.
+如果只找到 registration，但找不到 trigger path，记录为 `indirect_call_evidence_gap`。
 
-## Evidence Notes Format
+## 证据记录格式
 
-Use this format inside `.impact-scan/codegraph-evidence.md`:
+在 `.impact-scan/codegraph-evidence.md` 中使用以下格式：
 
 ```markdown
 ### subject_name
@@ -79,7 +79,7 @@ Use this format inside `.impact-scan/codegraph-evidence.md`:
 - Call stacks:
   - entry -> wrapper -> subject (`complete_to_entry`)
   - middle_caller -> subject (`evidence_gap`, shallow ordinary caller)
-- Callback/function pointer evidence:
+- Callback / function pointer evidence:
   - registration: ...
   - storage owner: ...
   - indirect call site: ...
