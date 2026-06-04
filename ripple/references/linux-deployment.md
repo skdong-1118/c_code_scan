@@ -1,72 +1,58 @@
 # Linux Intranet Deployment
 
-Use this reference when installing the scan workflow on an offline or intranet Linux server.
+Use this reference when installing the pure MCP `ripple` workflow on an offline or intranet Linux server.
 
-## Recommended Tools
-
-Required:
+## Required Tools
 
 - Git
-- Python 3.6 or newer
-- `codegraph`
+- Claude Code or a compatible agent runtime
+- CodeGraph MCP server configured for the agent
+- Read access to the target C repository
 
-Do not depend on online installers during normal agent runs. Package approved Linux binaries in an internal artifact repository or shared directory. Pin tool versions after validation.
+Python is not required for the `ripple` workflow in this version.
 
-## Suggested Layout
+## CodeGraph MCP Expectations
+
+The agent must have CodeGraph MCP tools that can provide, or approximate:
 
 ```text
-/opt/tools/codegraph/bin/codegraph
-/opt/tools/python/bin/python3
+definition
+references
+callers
+callees
+callchain
 ```
 
-Add these directories to the service account `PATH`, or configure the agent runtime environment with absolute tool paths.
+For function pointer and callback analysis, the MCP server should ideally expose evidence for:
 
-## CodeGraph Setup
+```text
+address-taken references
+registration sites
+handler table assignments
+indirect call sites
+```
 
-1. Install the Linux `codegraph` binary on the target server.
-2. Verify checksum according to internal policy.
-3. Ensure the Claude Code service account can run `codegraph --help`.
-4. For large repositories, build or refresh the CodeGraph index during a scheduled window or CI preparation step.
-5. Keep `.codegraph` inside the repository unless internal policy requires a separate cache path.
+If those tools are unavailable, the agent must record the missing evidence as `indirect_call_evidence_gap`.
 
-Claude Code should run the scan in CodeGraph required mode:
+## Repository Preparation
+
+Run the agent from the target repository root. The repository must have enough source context for:
 
 ```bash
-python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --codegraph-mode required
+git diff --name-status HEAD~1..HEAD
+git diff --stat HEAD~1..HEAD
+git diff --unified=80 HEAD~1..HEAD -- '*.c' '*.h'
 ```
 
-Required mode fails fast when CodeGraph is unavailable:
+The workflow writes Markdown artifacts under:
 
-```bash
-python3 .claude/skills/ripple/scripts/ripple_scan.py --range HEAD~1..HEAD --codegraph-mode required
+```text
+.impact-scan/
 ```
 
-## Path and Shell Rules
+## Operational Notes
 
-- Prefer Python `subprocess` argument arrays over shell strings.
-- Keep `git`, `python3`, and `codegraph` available on `PATH`.
-- Normalize paths to `/` in reports and configuration.
-- Run commands from the target repository root.
-
-## Operational Limits
-
-For million-line repositories, keep result sizes bounded:
-
-- impact depth: 2 by default
-- references per symbol: 50 by default
-- files listed per subsystem: 20 by default
-- generated report directory: `.impact-scan`
-
-The scanner is designed to produce an actionable triage report, not a proof of behavioral compatibility.
-
-## Optional Repository Config
-
-Place `.impact-scan.yml` or `.impact-scan.json` in each C subsystem directory to define:
-
-- public interface paths
-- legacy feature paths
-- architecture high-risk paths
-- memory-sensitive paths
-- low-risk paths
-
-This keeps each scan bounded to one subsystem and makes Claude Code less dependent on whole-repository inference.
+- Do not rely on shell `codegraph` commands for this version.
+- Do not rely on `rg` or Grep as substitutes for CodeGraph evidence.
+- Keep MCP tool names documented in `.impact-scan/codegraph-evidence.md`.
+- If MCP is unavailable, stop before Step 3 and report that this skill version cannot complete the analysis.

@@ -1,69 +1,112 @@
 # Report Format Reference
 
-Use this reference when generating or explaining `.impact-scan/risk_report.md`.
+Use this reference when generating `.impact-scan/risk_report.md`.
+
+The final report must be Chinese Markdown. Professional technical terms may remain in English.
 
 ## Required Sections
 
-The final report must be Chinese Markdown. Professional technical terms may remain in English. It normally includes:
+```text
+概要
+分析分层
+Reviewer 结论
+高/中风险项
+受影响 subsystem / 业务流程
+Reference Evidence
+已分析调用栈
+生命周期与错误路径分析
+函数指针 / Callback / 间接调用证据
+Evidence Gaps
+建议回归检查
+局限性
+```
 
-- 概要
-- 用户重点关注覆盖
-- 分析分层
-- Reviewer 结论
-- 高/中风险项
-- 架构风险类别
-- 受影响 subsystem 候选
-- Reference Evidence
-- Impact Paths
-- 已分析调用栈
-- Deep Call-Chain Evidence
-- 生命周期风险证据
-- 内存泄漏关注点
-- 指针别名与生命周期关注点
-- 建议回归检查
-- 局限性
-
-Do not include the removed mandatory-review section.
+Do not include a mandatory manual-review section. The report itself is the review.
 
 ## Reviewer Conclusions
 
-For every high/medium risk item, write a concrete reviewer-style conclusion in Chinese. Each item must answer:
+For every high/medium risk item, write a concrete reviewer-style conclusion. Each item must answer:
 
-- 改动点: changed subject, file, kind, score.
-- 风险原因: evidence-backed reason, not only a category label.
-- 影响流程: the analyzed call stack, business entry, subsystem, or evidence gap.
+- 改动点: what changed and where.
+- 风险原因: why the evidence suggests risk.
+- 影响流程: analyzed business flow, call stack, subsystem, or evidence gap.
 - 最坏结果: concrete failure mode such as UAF, leak, wrong dispatch, ABI break, or error-path regression.
 - 验证建议: scenario-level regression check tied to the affected path.
 
-Avoid abstract-only wording such as `检测到 pointer_alias_lifetime 风险` without explaining the object/path/story.
+Avoid abstract-only wording such as:
 
-## Layer Wording
+```text
+检测到 pointer_alias_lifetime 风险。
+```
 
-Use these layer meanings:
+Prefer:
 
-- CodeGraph 层: reference/caller/callee/include/subsystem impact evidence. Local variable changes are first mapped to the enclosing function, then expanded with CodeGraph.
-- Deep call-chain 层: use `.impact-scan/call_chain_analysis.json` to explain business entry groups, branch points, upstream fan-in, downstream fan-out, and paths that need source-level semantic review.
-- Heuristic 层: deterministic risk signals from functions, paths, diff content, categories, object types, fields, ownership APIs, and escape points.
-- 生命周期证据层: heap allocation, container insert/remove, callback opaque, struct field escape, and error cleanup evidence.
+```text
+对象被释放后仍可能被 queue/list/callback 持有；如果上层业务入口继续消费该对象，可能产生 UAF 或悬空指针。
+```
 
-Step 4 must reference `.impact-scan/step3f_completion.json`. If it is missing or `step3_complete` is not true, the final report is premature.
+## Analysis Layers
 
-Call-chain analysis must target the top-level business entry or root caller, not a fixed depth. Depth is only a CodeGraph search budget. Only `complete_to_entry` and `complete_to_root` are successful terminal statuses; `incomplete_depth_limit`, `truncated_path_budget`, and `evidence_gap` are unresolved evidence gaps, not proof of low impact.
+- CodeGraph MCP 层: definition, references, callers, callees, callchain, registration, indirect call evidence.
+- Source reasoning 层: source-level interpretation of branches, object ownership, error paths, and return-value consumers.
+- Heuristic risk 层: risk categories inferred from diff content, paths, public headers, callbacks, memory operations, ABI/layout changes, and lifecycle signals.
+- Evidence gap 层: unresolved paths that must not be treated as low risk.
 
-The report must include the analyzed call stacks from `.impact-scan/call_chain_analysis.json`, including path, entry, depth, legacy marker, and termination status. Do not hide incomplete paths; label them as evidence gaps.
+## Call Stack Reporting
+
+The report must include analyzed call stacks from `.impact-scan/codegraph-evidence.md`.
+
+For each path include:
+
+```text
+path
+entry/root status
+depth or qualitative length
+legacy/non-legacy marker when known
+evidence gap when unresolved
+```
+
+Successful statuses:
+
+```text
+complete_to_entry
+complete_to_root
+```
+
+Incomplete statuses:
+
+```text
+evidence_gap
+indirect_call_evidence_gap
+path_explosion_gap
+```
+
+One-layer ordinary callers are not root evidence.
+
+## Function Pointer and Callback Reporting
+
+If a changed function may be called through a function pointer, ops table, handler table, callback, or registration API, include:
+
+- registration site
+- storage owner
+- indirect call site
+- trigger entry
+- unresolved gaps
+
+If only registration is found, do not call the path complete.
 
 ## Confidence
 
-Confidence is high when CodeGraph produced reference evidence. Confidence is low when only deterministic heuristics are available.
+Confidence is high only when CodeGraph MCP evidence and source reasoning agree.
 
 Phrase limitations plainly:
 
-- `这是 regression risk triage scan，不是 compatibility proof。`
-- `function pointer 和 callback paths 依赖 CodeGraph 索引能力。`
-- `没有 compile database 或 semantic C index 时，类型关系可能不完整。`
+- `这是 regression risk review，不是 compatibility proof。`
+- `function pointer 和 callback paths 依赖 CodeGraph MCP 能力。`
+- `未闭合调用栈是 evidence gap，不是低风险证明。`
 
 ## Style
 
-- Keep technical terms in English when clearer: `changed symbols`, `subsystem`, `legacy path`, `memory-lifetime`, `ABI`, `callback`, `CodeGraph`.
-- Use evidence-backed language: `可能影响`, `建议验证`, `命中证据`.
-- Avoid claiming a change is safe. The report narrows risk and validation paths.
+- Use evidence-backed language: `可能影响`, `建议验证`, `证据显示`.
+- Avoid claiming a change is safe.
+- Keep the report readable for C reviewers. Prefer concrete object/path stories over category lists.

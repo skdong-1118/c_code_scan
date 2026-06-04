@@ -57,7 +57,7 @@ Scores are triage signals, not proof of defects.
 
 If a diff only changes a function-body local variable or field, do not query CodeGraph with local names such as `ret`, `ctx`, `tmp`, or `flag`.
 
-Map the diff line to the enclosing function, preserve the local evidence, and use the enclosing function as the Step 3 CodeGraph expansion subject.
+Map the diff line to the enclosing function, preserve the local evidence, and use the enclosing function as the Step 3 CodeGraph MCP query subject.
 
 Examples:
 
