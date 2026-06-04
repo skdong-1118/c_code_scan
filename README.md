@@ -151,7 +151,8 @@ codegraph init -i
 
 - 用户只说“分析最近一次修改对已有功能的影响”或“重新分析本项目”时，默认走交互式分步流程。
 - Step 0 不再要求用户选择 subsystem、symbol、风险项或忽略路径；默认先读取当前分支最后一个 commit 的 git 修改路径，再实时推断完整 subsystem 路径，并使用内置风险项。
-- 每次新分析开始前会主动清空输出目录里的旧分析结果；`discover` 和 one-shot 会重建 `.impact-scan/`，后续 `triage` / `expand` / `report` 不会清空前一步产物。
+- 每次新分析或重新分析都必须先执行 Step 1 `discover`，并在读取旧 `workflow_state.json` 前清空输出目录里的旧分析结果；只有用户明确说“继续上一次分析”时，才按旧 `next_required_step` 继续。
+- `discover` 和 one-shot 会重建 `.impact-scan/`，后续 `triage` / `expand` / `report` 仅在继续当前分析时保留前一步产物。
 - Step 1 `discover` 完成后，Claude Code 应该展示变更范围摘要，并等待你确认扫描范围。
 - Step 2 `triage` 完成后，Claude Code 应该展示风险数量和 expansion candidates，并等待你确认是否继续。
 - Step 3 `expand` 完成后，Claude Code 应该展示 CodeGraph 命中和 reference evidence，并等待你确认是否生成报告。
@@ -340,7 +341,7 @@ fosip/nbm/api.c
 .impact-scan/
 ```
 
-开始新分析时，脚本会先清空并重建输出目录，避免读取上一次分析留下的 JSON 或报告。清理只发生在 `--step discover` 或 one-shot 入口；`triage`、`expand`、`report` 会保留并读取当前分析的前序产物。
+开始新分析或重新分析时，必须从 `--step discover` 或 one-shot 入口开始；脚本会先清空并重建输出目录，避免读取上一次分析留下的 JSON 或报告。旧 `workflow_state.json` 只适用于“继续当前分析”，不能用于新的分析请求。清理只发生在 `--step discover` 或 one-shot 入口；`triage`、`expand`、`report` 会保留并读取当前分析的前序产物。
 
 主要输出文件：
 

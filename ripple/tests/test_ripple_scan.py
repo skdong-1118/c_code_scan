@@ -1123,6 +1123,8 @@ class CImpactScanTests(unittest.TestCase):
         self.assertIn("Default mode is interactive guided mode", skill_text)
         self.assertIn("stop and wait", skill_text)
         self.assertIn("Do not run Step 1 through Step 4 in one uninterrupted sequence", skill_text)
+        self.assertIn("New user analysis requests always start with Step 1 `discover`", skill_text)
+        self.assertIn("Use `workflow_state.json` only when continuing the current analysis", skill_text)
         self.assertNotIn("Evidence " + "review", skill_text)
         self.assertNotIn("Step " + "5", skill_text)
         self.assertIn("Deep call-chain analysis", skill_text)

@@ -34,9 +34,11 @@ The guided workflow state is:
 - Require `codegraph` with `--codegraph-mode required`; do not use Grep, ripgrep, `rg`, or Claude Code's Grep tool for reference search.
 - Default mode is interactive guided mode. Even if the user only says "analyze", stop and wait after each scanner step unless they clearly say `直接生成报告`, `不用确认`, `全自动`, `one-shot`, or `CI`.
 - Do not ask for subsystem, focus symbols, risk categories, or ignore paths by default. Infer scope from latest-commit git changed files.
-- Starting a new analysis clears previous scan artifacts at `discover` or one-shot start. Do not clear artifacts before `triage`, `expand`, or `report`.
+- New user analysis requests always start with Step 1 `discover`; this clears previous scan artifacts before reading old workflow state.
+- Use `workflow_state.json` only when continuing the current analysis, not when the user asks to analyze/re-analyze again.
+- Do not clear artifacts before `triage`, `expand`, or `report` when continuing the current analysis.
 - Target systems are single-threaded. Do not add a separate threading, multiprocess, or execution-model review section.
-- Before every step, check `.impact-scan/workflow_state.json` when it exists. Follow `next_required_step`; do not skip ahead.
+- When continuing the current analysis, check `.impact-scan/workflow_state.json` and follow `next_required_step`; do not skip ahead.
 - A step is complete only when its required artifact exists. Chat summaries are not step completion.
 
 ## Interactive Guided Mode
