@@ -1,3 +1,3 @@
 display_name: Ripple
-short_description: 使用 CodeGraph MCP 的模型驱动 C 回归影响评审。
-default_prompt: 使用 ripple skill 以交互式流程评审当前分支最后一次 C 代码提交。先清理 .impact-scan，只检查 HEAD~1..HEAD，根据 git diff 推断 scope，使用 CodeGraph MCP 查询 definition、references、callers、callees、callchains，每一步都写 Markdown 产物，并且只有证据步骤完成后才生成最终中文 reviewer 风格报告。
+short_description: 使用 CodeGraph MCP 发现代码变更的业务影响流程。
+default_prompt: 使用 ripple skill 以交互式流程分析当前分支最后一次提交。先清理 .impact-scan，只检查 HEAD~1..HEAD，根据 git diff 推断 scope，把变更解释为业务语义，再使用 CodeGraph MCP 深入发现顶层业务入口、共享公共流程、业务分叉、跨 subsystem 路径和容易忽略的间接触发流程。每一步都写 Markdown 产物，最后生成中文业务影响报告。

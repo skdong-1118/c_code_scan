@@ -1,26 +1,34 @@
 # Ripple
 
-`ripple` 是一个面向 Claude Code / AI Agent 的 C 语言回归影响评审 skill。agent 读取最近一次 diff，直接调用 `CodeGraph MCP`，结合源码证据进行推理，并生成中文 reviewer 风格报告。
+`ripple` 是一个面向 Claude Code / AI Agent 的业务影响发现 skill。它从当前分支最后一次代码修改出发，使用 `CodeGraph MCP` 和源码语义推理，发现开发者可能没有意识到的受影响业务流程。
 
-硬性分析范围始终是当前分支最后一个 commit：
+硬性分析范围始终是：
 
 ```text
 HEAD~1..HEAD
 ```
 
-不要把本 skill 用于历史 commit、多个 commit、其他分支、merge-base 范围或自定义范围。
+不要用于历史 commit、多个 commit、其他分支、merge-base 范围或自定义范围。
 
 ## 设计目标
 
-`ripple` 重点帮助模型发现开发者可能没有意识到的业务影响流程，尤其是：
+`ripple` 重点回答：
+
+```text
+我改了这段代码，哪些业务功能可能被影响？
+哪些上游入口会走到这里？
+哪些其他流程共享了这段公共逻辑？
+哪些老功能、旁路流程或特殊条件容易被忽略？
+```
+
+重点场景包括：
 
 - 很长的业务调用栈
-- 底层通用函数被多个上层业务入口复用
-- function pointer、callback、ops table、注册表路径
-- 对象生命周期和 pointer alias 分析
-- 大改动中需要从业务语义判断重点路径的场景
-
-skill 只规定分析范围、证据要求、交互流程和报告格式；具体影响判断由模型基于 CodeGraph MCP 证据和源码语义完成。
+- 底层公共流程被多个业务入口复用
+- 多层 wrapper 之上才出现业务分叉
+- callback、handler table、ops table 等间接触发路径
+- 配置、状态、消息类型或模式决定的条件流程
+- 跨 subsystem 的共享数据和副作用
 
 ## 当前结构
 
@@ -29,10 +37,10 @@ ripple/
   SKILL.md
   agents/openai.yaml
   references/
+    business-impact-rules.md
     codegraph-mcp-checklist.md
     linux-deployment.md
     report-format.md
-    risk-rules.md
 ```
 
 ## 运行要求
@@ -40,40 +48,36 @@ ripple/
 - Claude Code 或兼容的 agent 运行环境
 - Git
 - agent 可直接使用的 `CodeGraph MCP` 工具
-- 目标 C 仓库的源码读取权限
-
-如果 agent 没有可用的 CodeGraph MCP 工具，则无法按设计完成 Step 3。
+- 目标仓库的源码读取权限
 
 ## 默认流程
 
 默认是交互式流程。每次新分析从 Step 1 开始，并在读取旧产物前清空 `.impact-scan`。
 
 ```text
-Step 1：Scope discovery，发现本次变更范围
-Step 2：Risk framing，建立风险假设
-Step 3：CodeGraph MCP 深挖，深入调用链和引用证据
-Step 4：Source reasoning，结合源码做语义推理
-Step 5：Final report，生成最终中文报告
+Step 1：发现变更范围
+Step 2：解释变更的业务语义
+Step 3：发现上游业务入口和共享流程
+Step 4：分析潜在遗漏流程
+Step 5：生成业务影响报告
 ```
 
 只有当用户明确要求 `直接生成报告`、`不用确认`、`全自动`、`one-shot` 或 `CI` 时，才跳过中间确认。
 
 ## 输出产物
 
-所有产物都使用 Markdown，方便模型直接读取、修订和引用：
-
 ```text
 .impact-scan/scope.md
-.impact-scan/risk-framing.md
+.impact-scan/change-semantics.md
 .impact-scan/codegraph-evidence.md
-.impact-scan/source-reasoning.md
-.impact-scan/risk_report.md
+.impact-scan/business-reasoning.md
+.impact-scan/impact_report.md
 ```
 
 终端总结不算完成。最终交付始终是：
 
 ```text
-.impact-scan/risk_report.md
+.impact-scan/impact_report.md
 ```
 
 ## 分析要求
@@ -81,37 +85,22 @@ Step 5：Final report，生成最终中文报告
 agent 必须：
 
 - 只检查 `HEAD~1..HEAD`
-- 根据变更路径自动推断 subsystem，不默认询问用户
-- 使用 `CodeGraph MCP` 查询 definition、references、callers、callees、callchain
-- 持续展开调用链，直到到达顶层业务入口/root，或者明确记录 `evidence_gap`
-- 不把一层普通 caller 当成 root 证据
-- 对 function pointer / callback 路径分析 registration、storage owner、indirect call site 和 trigger entry
-- 对 heap object、container、callback opaque、指针字段和 error cleanup path 说明对象生命周期
-- 写 reviewer 风格结论，不只输出风险标签
-
-## 默认风险项
-
-```text
-memory_leak
-memory_safety
-abi_layout
-pointer_alias_lifetime
-error_handling
-callback_dispatch
-```
-
-目标系统按单线程模型处理。不要增加多线程、多进程或执行模型评审章节。
+- 根据变更路径自动推断 subsystem
+- 把代码差异翻译成业务行为变化
+- 使用 `CodeGraph MCP` 发现所有主要上游业务入口
+- 持续展开共享公共流程，直到区分不同业务含义的分支
+- 主动寻找老功能、旁路、特殊条件和间接触发流程
+- 单独输出“开发者可能忽略的影响流程”
+- 无法确认的路径标记为 `evidence_gap`，不能当作无影响
 
 ## 最终报告
 
-最终报告必须是中文 Markdown。必要的专业术语可以保留英文，例如 `CodeGraph`、`business entry`、`fan-in`、`fan-out`、`callback`、`ABI`、`memory-lifetime`、`evidence gap`。
+最终报告必须是中文 Markdown，并以业务流程为中心，至少包含：
 
-每个 high/medium 风险项都必须回答：
-
-- 改动点
-- 风险原因
-- 影响流程
-- 最坏结果
-- 验证建议
-
-报告必须包含已分析调用栈和未解决的 evidence gap。不能把缺少证据解释成低风险。
+- 本次变更的业务语义
+- 已确认影响流程
+- 潜在影响流程
+- 开发者可能忽略的影响流程
+- 跨 subsystem 影响
+- 未闭合证据
+- 具体业务验证建议

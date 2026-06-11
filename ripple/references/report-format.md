@@ -1,112 +1,139 @@
-# 报告格式参考
+# 业务影响报告格式
 
-生成 `.impact-scan/risk_report.md` 时使用本文件。
+生成 `.impact-scan/impact_report.md` 时使用本文件。
 
-最终报告必须是中文 Markdown。必要的专业术语可以保留英文。
+最终报告必须是中文 Markdown，必要的专业术语可以保留英文。报告要说明“哪些业务流程可能受到影响以及为什么”，不要按语言技术缺陷分类。
 
 ## 必需章节
 
 ```text
 概要
-分析分层
-Reviewer 结论
-高/中风险项
-受影响 subsystem / 业务流程
-Reference Evidence
-已分析调用栈
-生命周期与错误路径分析
-函数指针 / Callback / 间接调用证据
+本次变更的业务语义
+已确认影响流程
+潜在影响流程
+开发者可能忽略的影响流程
+共享公共流程与业务分叉
+跨 subsystem 影响
+已分析调用路径
 Evidence Gaps
-建议回归检查
+业务验证建议
 局限性
 ```
 
-不要加入“必须人工 review”这类独立章节。报告本身就是 review 结论。
+## 概要
 
-## Reviewer 结论
+简要说明：
 
-对每个 high/medium 风险项，都要写具体的 reviewer 风格结论。每项必须回答：
+- 本次提交改变的核心业务行为
+- 已识别的业务入口组数量
+- 是否涉及共享公共流程或跨 subsystem 路径
+- 最值得优先验证的业务场景
+- 当前是否存在未闭合证据
 
-- 改动点：改了什么，在哪个文件 / 函数 / 类型。
-- 风险原因：为什么这些证据指向风险，不要只写风险分类名。
-- 影响流程：已分析的业务流程、调用栈、subsystem，或明确的 evidence gap。
-- 最坏结果：具体失败模式，例如 UAF、leak、错误 dispatch、ABI 破坏、error path regression。
-- 验证建议：和受影响路径绑定的具体回归验证场景。
+## 业务语义
 
-避免只写抽象句子，例如：
+不要复述 diff。解释修改前后：
 
-```text
-检测到 pointer_alias_lifetime 风险。
+- 输入、配置、消息或状态如何被解释
+- 哪个业务判断、分发或处理结果发生变化
+- 哪些返回结果、状态变化、数据变化或副作用会被上游消费
+- 变化在什么条件下生效
+
+## 影响流程条目
+
+“已确认影响流程”“潜在影响流程”和“开发者可能忽略的影响流程”中的每一项都使用以下结构：
+
+```markdown
+### 流程名称
+
+- 证据状态：confirmed / probable / possible / evidence_gap
+- 业务入口：...
+- 调用或触发路径：...
+- 触发条件：...
+- changed subject 的作用：...
+- 可能改变的业务结果：...
+- 判断依据：CodeGraph 证据与源码语义...
+- 验证建议：...
 ```
 
-优先写成：
+证据状态含义：
+
+- `confirmed`：调用关系和业务语义均能确认。
+- `probable`：调用路径完整，但触发条件或实际数据仍需验证。
+- `possible`：存在引用、共享数据或公共流程关系，路径尚未完全闭合。
+- `evidence_gap`：证据不足，不能排除影响。
+
+## 共享流程与业务分叉
+
+公共函数被多个业务流程复用时，报告必须说明：
+
+- 哪些入口汇入该公共流程
+- 业务分叉发生在当前函数附近还是多层 wrapper 之上
+- 不同入口的条件、数据和预期结果有何差异
+- 本次变更为什么可能同时影响这些流程
+
+不要只列最近一层 caller。
+
+## 已分析调用路径
+
+包含 `.impact-scan/codegraph-evidence.md` 中有业务意义的代表路径。每条路径记录：
 
 ```text
-对象被释放后仍可能被 queue/list/callback 持有；如果上层业务入口继续消费该对象，可能产生 UAF 或悬空指针。
+业务入口组
+entry -> wrapper -> ... -> changed subject
+触发条件
+路径状态
+归入该入口组的依据
 ```
 
-## 分析分层
-
-- CodeGraph MCP 层：definition、references、callers、callees、callchain、registration、indirect call evidence。
-- Source reasoning 层：结合源码解释 branch、object ownership、error path、return-value consumer。
-- Heuristic risk 层：根据 diff 内容、路径、public header、callback、memory 操作、ABI/layout 变化和 lifecycle 信号推断风险分类。
-- Evidence gap 层：未闭合路径必须显式记录，不能当作低风险。
-
-## 调用栈报告要求
-
-报告必须包含 `.impact-scan/codegraph-evidence.md` 中已经分析过的调用栈。
-
-每条 path 包含：
-
-```text
-path
-entry/root status
-depth 或定性长度
-legacy/non-legacy 标记，若能判断
-未闭合时的 evidence gap
-```
-
-成功状态：
+路径状态可以是：
 
 ```text
 complete_to_entry
 complete_to_root
-```
-
-未完成状态：
-
-```text
 evidence_gap
 indirect_call_evidence_gap
 path_explosion_gap
 ```
 
-一层普通 caller 不是 root 证据。
+对于路径规模很大的公共流程，按业务入口组归纳，并保留代表路径和未覆盖范围。
 
-## Function Pointer 与 Callback 报告要求
+## 间接触发路径
 
-如果 changed function 可能通过 function pointer、ops table、handler table、callback 或 registration API 被调用，必须包含：
+如果 changed subject 通过 callback、handler table、ops table、注册 API 或其他间接方式触发，报告应说明：
 
-- registration site
-- storage owner
-- indirect call site
-- trigger entry
-- unresolved gaps
+- 在哪里注册或绑定
+- 在哪里 dispatch 或间接调用
+- 哪个业务入口触发 dispatch
+- 哪些业务条件选择该处理器
+- 尚未闭合的路径
 
-如果只找到了 registration，不要把路径判断为 complete。
+重点是解释业务触发关系及其可能改变的业务结果。
 
-## 置信度
+## Evidence Gaps
 
-只有当 CodeGraph MCP 证据和源码语义推理互相印证时，置信度才可以写 high。
+对每个缺口说明：
 
-局限性要直接写清楚：
+- 缺少哪段关系或业务条件
+- 为什么当前证据不足
+- 哪些业务流程因此无法排除
+- 需要什么查询、源码或运行信息才能闭合
 
-- `这是 regression risk review，不是 compatibility proof。`
-- `function pointer 和 callback paths 依赖 CodeGraph MCP 能力。`
-- `未闭合调用栈是 evidence gap，不是低风险证明。`
+缺少证据不能写成“无影响”。
+
+## 业务验证建议
+
+建议必须绑定具体业务场景，包括：
+
+- 从哪个业务入口触发
+- 使用什么关键配置、状态、模式、消息或输入
+- 应观察什么业务结果或副作用
+- 是否需要覆盖旧功能、旁路、恢复流程和跨 subsystem 场景
 
 ## 写作风格
 
-- 使用证据驱动的表达：`可能影响`、`建议验证`、`证据显示`。
-- 避免声称变更是安全的。
-- 报告要让 C reviewer 容易读懂。优先写具体对象 / 路径故事，不要只罗列风险分类。
+- 以业务流程和用户可观察结果为中心。
+- 使用“证据显示”“可能影响”“建议验证”等可追溯表达。
+- 区分已确认事实、合理推断和证据缺口。
+- 不用抽象标签代替具体路径和业务结果。
+- 不声称分析构成完整正确性证明。
